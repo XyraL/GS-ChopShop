@@ -15,16 +15,42 @@ Config.Contract = {
 }
 
 --========================================
--- CONTRACTS Modifiers
+-- SPECIAL CONTRACTS (rep-gated)
+--========================================
+Config.SpecialContracts = {
+  enabled = true,
+  label = 'BLACK OPS',
+  repRequired = 50,
+  baseTier = 'tier3',
+  payoutMult = 1.35,
+  alertMult = 1.10,
+  minMods = 2,
+  maxMods = 3,
+  forceBonusObjective = true,
+}
+
+--========================================
+-- CO-OP (invite a partner for a split)
+--========================================
+Config.Coop = {
+  enabled = true,
+  partnerShare = 0.35,      -- % of leader cash payout given to partner
+  partnerRepShare = 1.0,    -- multiplier on partner rep (1.0 = same rep as leader)
+}
+
+--========================================
+-- SMARTER CONTRACTS (Modifiers)
 --========================================
 -- Adds small randomized twists to each contract (requirements/reward/risk).
 -- If you want classic/static contracts, set enabled=false.
 Config.ContractModifiers = {
   enabled = true,
+  -- Keep at least 1 active by default
   minActive = 1,
   maxActive = 2,
 
   -- If a modifier requires a step, we can force that step on even if the
+  -- toggle in V2/V3 is disabled.
   forceStepsOn = true,
 
   defs = {
@@ -76,6 +102,7 @@ Config.Search = {
 }
 
 Config.V2 = {
+  -- Realism steps
   vinScratch = true,
   removePlates = true,
 
@@ -83,13 +110,16 @@ Config.V2 = {
   useConverterFinale = false,
 }
 
+-- Friendly alias
+Config.RealismSteps = Config.V2
+
 Config.PDAlert = {
   enabled = true,
   onStart = true,       -- alert chance when contract starts (after the vehicle is spawned)
   onArrival = false,    -- alert chance when arriving to chop bay
   chance = { tier1 = 15, tier2 = 25, tier3 = 40 }, -- %
   cooldownSeconds = 60,
-  dispatch = "custom",  -- (event stub), you can swap
+  dispatch = "custom", 
 }
 
 Config.Tiers = {
@@ -149,10 +179,12 @@ Config.Bays = {
   vec4(-419.79, -1682.96, 17.6, 341.96),
 }
 
+-- Legacy alias
 Config.ChopSpots = Config.Bays
 
--- Advanced workflow steps
+-- Advanced workflow steps (order matters)
 Config.AdvancedSteps = {
+  -- Optional realism steps
   { key = "vin_scratch" },
   { key = "plate_front" },
   { key = "plate_rear" },
@@ -170,7 +202,7 @@ Config.AdvancedSteps = {
 }
 
 --========================================
--- ADVANCED FEATURES 
+-- ADVANCED FEATURES
 --========================================
 Config.V3 = {
   enableMoveCutCrush = true,
@@ -207,6 +239,9 @@ Config.V3 = {
     setWaypointToCrusherOnCut = false,
   },
 }
+
+-- Friendly alias (same table as V3)
+Config.ShellPipeline = Config.V3
 
 
 
@@ -283,4 +318,138 @@ Config.Upgrades = {
     finalReducePerLevel = 0.10,
     minFinalMult = 0.55,
   },
+
+  -- Personal Upgrades (Operator)
+  tech_hand = {
+    label = 'Technician Hands',
+    basePrice = 15000,
+    maxLevel = 15,
+    timeReducePerLevel = 0.02, -- stacks with chop_speed/shop_lift
+    minTimeMult = 0.55,
+  },
+
+  runner_instinct = {
+    label = 'Runner Instinct',
+    basePrice = 20000,
+    maxLevel = 10,
+    radiusReducePerLevel = 0.05, -- stacks with scanner
+    minRadiusMult = 0.50,
+  },
+
+  broker_cut = {
+    label = 'Broker Cut',
+    basePrice = 30000,
+    maxLevel = 10,
+    payoutBonusPerLevel = 0.06, -- stacks with clean_payout/net_fence
+    maxPayoutMult = 3.5,
+  },
+
+  -- Shop Upgrades (Facility)
+  shop_lift = {
+    label = 'Hydraulic Lift',
+    basePrice = 35000,
+    maxLevel = 10,
+    timeReducePerLevel = 0.03,
+    minTimeMult = 0.55,
+  },
+
+  shop_dampening = {
+    label = 'Sound Dampening',
+    basePrice = 45000,
+    maxLevel = 10,
+    alertReducePerLevel = 0.05, -- stacks with heat_dampener
+    minAlertMult = 0.30,
+  },
+
+  shop_compactor = {
+    label = 'Scrap Compactor',
+    basePrice = 55000,
+    maxLevel = 10,
+    payoutBonusPerLevel = 0.04,
+    maxPayoutMult = 3.5,
+  },
+
+  shop_shredder = {
+    label = 'Shell Shredder',
+    basePrice = 70000,
+    maxLevel = 8,
+    finalReducePerLevel = 0.06, -- stacks with auto_dispatch
+    minFinalMult = 0.45,
+  },
+
+  -- Network Upgrades (Syndicate)
+  net_fence = {
+    label = 'Fence Connections',
+    basePrice = 60000,
+    maxLevel = 10,
+    payoutBonusPerLevel = 0.05,
+    maxPayoutMult = 3.5,
+  },
+
+  net_forgery = {
+    label = 'Forgery Lab',
+    basePrice = 90000,
+    maxLevel = 6,
+    payoutBonusPerLevel = 0.07,
+    maxPayoutMult = 3.5,
+  },
+
+  net_parts = {
+    label = 'Parts Market',
+    basePrice = 50000,
+    maxLevel = 10,
+    payoutBonusPerLevel = 0.03,
+    maxPayoutMult = 3.5,
+  },
+
 }
+
+--[[
+  BONUS OBJECTIVES (per-contract)
+  These roll on top of Smart Modifiers.
+  Reward = extra money + reputation points on completion.
+--]]
+Config.BonusObjectives = {
+  enabled = true,
+  -- Set to 0 to make them optional/rare
+  chance = 100,
+
+  -- If enabled, a contract always rolls at most one objective.
+  -- (Keep it simple for players, and readable in UI.)
+  defs = {
+    speed_run = {
+      label = 'Speed Run',
+      desc  = 'Finish the chop fast. No sightseeing.',
+      weight = 40,
+      -- seconds from contract start to disposal
+      timeLimitSeconds = 420,
+      moneyMult = 1.20,
+      rep = 3,
+    },
+    clean_work = {
+      label = 'Clean Work',
+      desc  = 'Keep the shell clean. No big dents.',
+      weight = 25,
+      minBodyHealthRatio = 0.85,
+      moneyMult = 1.15,
+      rep = 2,
+    },
+    silent_operator = {
+      label = 'Silent Operator',
+      desc  = 'No heat. No dispatch.',
+      weight = 20,
+      moneyMult = 1.18,
+      rep = 3,
+    },
+    flawless_hands = {
+      label = 'Flawless Hands',
+      desc  = 'No slip-ups. Don\'t fail a step.',
+      weight = 15,
+      moneyMult = 1.12,
+      rep = 2,
+    }
+  }
+}
+
+-- Base reputation gain per successful contract (in addition to bonus objective rep)
+Config.Reputation = Config.Reputation or { basePerChop = 1 }

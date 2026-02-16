@@ -1,10 +1,7 @@
---========================================
--- GS-ChopShop Client
--- ox_target part-based chop + search radius
---========================================
 
-local activeContract = nil -- { tier, model, plate, startedAt, expiresAt, searchCenter, searchRadius, found }
-local activeSession  = nil -- { netId, bayIndex, done = { [stepKey]=true } }
+
+local activeContract = nil
+local activeSession  = nil
 
 local foundOnce = false
 local inPartAction = false
@@ -14,7 +11,6 @@ local searchBlipCenter = nil
 local bayZones = {}
 local bayRouteBlip = nil
 local lastAutoBegin = 0
-
 
 local sessionNetId = nil
 local sessionVeh = nil
@@ -42,9 +38,6 @@ end
 
 _G.getNextRequiredStep = getNextRequiredStep
 
---========================================
--- PART DEFINITIONS
---========================================
 local PARTS = {
   { key = "door_lf",  label = "Remove Driver Door",        bone = "door_dside_f",  time = 4500, icon = "fa-solid fa-door-open" },
   { key = "door_rf",  label = "Remove Passenger Door",     bone = "door_pside_f",  time = 4500, icon = "fa-solid fa-door-open" },
@@ -59,13 +52,10 @@ local PARTS = {
   { key = "engine",   label = "Pull Engine",               bone = "engine",        time = 6500, icon = "fa-solid fa-gears" },
 }
 
-
--- Build quick lookup for part keys
 local PART_KEY_SET = {}
 for _, p in ipairs(PARTS) do PART_KEY_SET[p.key] = true end
 local PRE_KEY_SET = {}
 
--- Pre-steps
 local PRE_STEPS = {
   { key = "vin_scratch", label = "Scratch VIN",        time = 6000, icon = "fa-solid fa-id-card",       bones = { "windscreen", "window_lf" } },
   { key = "plate_front", label = "Remove Front Plate", time = 3500, icon = "fa-solid fa-screwdriver",   bones = { "bumper_f", "bonnet" } },
@@ -74,9 +64,6 @@ local PRE_STEPS = {
 
 for _, s in ipairs(PRE_STEPS) do PRE_KEY_SET[s.key] = true end
 
---========================================
--- SMALL HELPERS
---========================================
 local function trimPlate(p)
   return (p or ""):gsub("%s+", "")
 end
@@ -92,7 +79,6 @@ local function notify(msg, nType)
     return
   end
 
-  -- fallback (QB). Guard in case QBCore isn't running.
   local ok = pcall(function()
     TriggerEvent("QBCore:Notify", msg, nType)
   end)
@@ -115,7 +101,6 @@ local function removeSearchBlips()
   searchBlipCenter = nil
 end
 
-
 local function removeBayBlip()
   if bayRouteBlip and DoesBlipExist(bayRouteBlip) then RemoveBlip(bayRouteBlip) end
   bayRouteBlip = nil
@@ -126,7 +111,6 @@ local function setBayBlip()
   local bays = Config.Bays or Config.ChopSpots or {}
   if type(bays) ~= 'table' or #bays == 0 then return end
 
-  -- choose nearest bay to the player for routing
   local p = GetEntityCoords(PlayerPedId())
   local bestI, bestD = 1, 999999.0
   for i, bay in ipairs(bays) do
@@ -138,7 +122,7 @@ local function setBayBlip()
 
   local bay = bays[bestI]
   bayRouteBlip = AddBlipForCoord(bay.x, bay.y, bay.z)
-  SetBlipSprite(bayRouteBlip, 50) -- garage
+  SetBlipSprite(bayRouteBlip, 50)
   SetBlipScale(bayRouteBlip, 0.85)
   SetBlipColour(bayRouteBlip, 1)
   SetBlipRoute(bayRouteBlip, true)
@@ -154,16 +138,15 @@ local function setSearchBlips(center, radius)
   searchBlip = AddBlipForRadius(center.x, center.y, center.z, radius + 0.0)
   SetBlipAlpha(searchBlip, (Config.Search and Config.Search.blipAlpha) or 120)
   SetBlipColour(searchBlip, (Config.Search and Config.Search.blipColor) or 1)
-  -- Center marker intentionally disabled (no pinpoint markers, zone only)
-end
 
+end
 
 local function canSkillCheck()
   return GetResourceState("ox_lib") == "started" and lib and lib.skillCheck ~= nil
 end
 
 local function doSkill(stepKey)
-  -- Minigames are optional and do NOT scale by tier.
+
   if not (Config.V3 and Config.V3.minigames and Config.V3.minigames.enabled) then return true end
   if not canSkillCheck() then return true end
 
@@ -187,6 +170,10 @@ local function doSkill(stepKey)
   end
 
   return lib.skillCheck(profile, keys) == true
+end
+
+local function skillCheck(stepKey)
+  return doSkill(stepKey)
 end
 
 local function progressBar(label, ms, animDict, animName)
@@ -234,7 +221,6 @@ local function progressBar(label, ms, animDict, animName)
     return not cancelled
   end
 
-  -- last-resort fallback
   Wait(ms)
   ClearPedTasks(ped)
   return true
@@ -255,47 +241,8 @@ end
 
 local function getAnimForStep(stepKey)
 
-  -- Plates + wheels: kneeling mechanic
-  if stepKey == 'plate_front' or stepKey == 'plate_rear'
-    or stepKey == 'wheel_lf' or stepKey == 'wheel_rf' or stepKey == 'wheel_lr' or stepKey == 'wheel_rr' then
-    return 'amb@world_human_vehicle_mechanic@male@base', 'base'
-  end
-
-  -- VIN scratch: inspection vibe
-  if stepKey == 'vin_scratch' then
-    return 'amb@world_human_clipboard@male@base', 'base'
-  end
-
-  -- Engine pull: standing mechanic
-  if stepKey == 'engine' then
-    return 'amb@world_human_vehicle_mechanic@male@base', 'base'
-  end
-
-  -- Moving shell: safe mechanic idle 
-  if stepKey == 'move_shell' then
-    return 'amb@world_human_vehicle_mechanic@male@idle_a', 'idle_a'
-  end
-
-  -- Cutting: welding
-  if stepKey == 'cut_shell' then
-    return 'amb@world_human_welding@male@base', 'base'
-  end
-
-  -- Final dispose: hammering
-  if stepKey == 'final' then
-    return 'amb@world_human_hammering@male@base', 'base'
-  end
-
-  -- Doors / hood / trunk: repair loop
-  if stepKey == 'hood' or stepKey == 'trunk'
-    or stepKey == 'door_lf' or stepKey == 'door_rf' or stepKey == 'door_lr' or stepKey == 'door_rr' then
-    return 'mini@repair', 'fixing_a_ped'
-  end
-
-  -- Fallback
-  return 'mini@repair', 'fixing_a_ped'
+  return 'amb@world_human_vehicle_mechanic@male@base', 'base'
 end
-
 
 local function doPartVisuals(veh, key)
   if not veh or veh == 0 or not DoesEntityExist(veh) then return end
@@ -345,7 +292,6 @@ local function allNonFinalDoneClient()
     return true
   end
 
-  -- Fallback: config-driven (legacy)
   for _, s in ipairs(Config.AdvancedSteps or {}) do
     if s.key ~= "final" and not activeSession.done[s.key] then
       return false
@@ -354,9 +300,6 @@ local function allNonFinalDoneClient()
   return true
 end
 
---========================================
--- TARGET CLEANUP / BUILD
---========================================
 local function clearSessionTargets()
   inPartAction = false
   sessionNetId = nil
@@ -375,9 +318,11 @@ local function clearSessionTargets()
 end
 
 local function stepEnabled(stepKey)
+
   local function contractForces(k)
     if not activeContract or not activeContract.modifiers then return false end
     k = tostring(k)
+
     local map = {
       require_vin = { vin_scratch = true },
       plates_mandatory = { plate_front = true, plate_rear = true },
@@ -442,7 +387,6 @@ local function computeRequiredListForVehicle(veh)
   return list
 end
 
-
 local function buildVehiclePartTargets(netId)
   if GetResourceState("ox_target") ~= "started" then
     notify("ox_target is required for advanced chop interactions.", "error")
@@ -457,13 +401,11 @@ local function buildVehiclePartTargets(netId)
     return
   end
 
-  -- wipe old if any
   pcall(function()
     exports.ox_target:removeLocalEntity(sessionVeh)
   end)
 
   local opts = {}
-
 
 local requiredSet = {}
 if activeSession and activeSession.requiredList then
@@ -473,7 +415,7 @@ if activeSession and activeSession.requiredList then
 end
 
 local function isRequired(stepKey)
-  -- if server didn't send a list, assume all steps are allowed
+
   if not activeSession or not activeSession.requiredList then return true end
   return requiredSet[stepKey] == true
 end
@@ -493,8 +435,6 @@ local function anyBoneExists(bones)
   return false
 end
 
-
-  -- Pre steps
   for _, step in ipairs(PRE_STEPS) do
     if stepEnabled(step.key) then
       opts[#opts+1] = {
@@ -518,8 +458,8 @@ end
         onSelect = function()
           if inPartAction then return end
           inPartAction = true
-
-          if not doSkill(step.key) then
+          if not skillCheck(step.key) then
+            TriggerServerEvent('gs-chopshop:server:noteSkillFail')
             notify('Failed. Try again.', 'error')
             inPartAction = false
             return
@@ -539,7 +479,6 @@ end
     end
   end
 
-  -- Parts
   for _, part in ipairs(PARTS) do
     if isRequired(part.key) and boneExists(part.bone) then
       opts[#opts+1] = {
@@ -570,11 +509,10 @@ end
           notify("Vehicle missing.", "error")
           return
         end
-
-        inPartAction = true
-        if not doSkill('cut_shell') then
-          inPartAction = false
+        if not skillCheck(part.key) then
+          TriggerServerEvent('gs-chopshop:server:noteSkillFail')
           notify('Failed. Try again.', 'error')
+          inPartAction = false
           return
         end
         local d,a = getAnimForStep(part.key)
@@ -593,7 +531,6 @@ end
     end
   end
 
-  -- V3 workflow: cut shell (vehicle interaction)
   if Config.V3 and Config.V3.enableMoveCutCrush and isRequired('cut_shell') and boneExists('bonnet') then
     opts[#opts+1] = {
       name = 'gs_chop_cut_shell',
@@ -622,11 +559,14 @@ end
         end
 
         inPartAction = true
-      if not doSkill('final') then
-          inPartAction = false
+
+        if not skillCheck('cut_shell') then
+          TriggerServerEvent('gs-chopshop:server:noteSkillFail')
           notify('Failed. Try again.', 'error')
+          inPartAction = false
           return
         end
+
         local ok = progressBar('Cutting shell', 7500, 'amb@world_human_welding@male@base', 'base')
         if not ok then
           inPartAction = false
@@ -646,7 +586,6 @@ end
     }
   end
 
-  -- Final option on the VEHICLE
   local useConverter = Config.V2 and Config.V2.useConverterFinale
   if not useConverter then
     opts[#opts+1] = {
@@ -673,12 +612,15 @@ end
         end
 
         inPartAction = true
-        if not doSkill('move_shell') then
-        notify('Failed. Try again.', 'error')
-        inPartAction = false
-        return
-      end
-      local ok = progressBar("Disposing shell", 6000, "amb@world_human_hammering@male@base", "base")
+
+        if not skillCheck('final') then
+          TriggerServerEvent('gs-chopshop:server:noteSkillFail')
+          notify('Failed. Try again.', 'error')
+          inPartAction = false
+          return
+        end
+
+        local ok = progressBar("Disposing shell", 6000, "amb@world_human_hammering@male@base", "base")
         if ok then
           TriggerServerEvent("gs-chopshop:server:completeStep", "final")
         else
@@ -697,7 +639,6 @@ local function rebuildBayZones()
     return
   end
 
-  -- remove old zones
   for _, id in ipairs(bayZones) do
     pcall(function()
       exports.ox_target:removeZone(id)
@@ -712,6 +653,7 @@ local function rebuildBayZones()
       radius = (bay.radius or 4.0),
       debug = false,
       options = {
+
         {
           name = ("gs_chop_move_%d"):format(i),
           icon = "fa-solid fa-location-crosshairs",
@@ -728,7 +670,7 @@ local function rebuildBayZones()
               if nextKey and nextKey ~= 'move_shell' then return false end
             end
             if IsPedInAnyVehicle(PlayerPedId(), false) then return false end
-            -- only show if move_shell is required for this session
+
             local required = false
             for _, k in ipairs(activeSession.requiredList) do
               if k == 'move_shell' then required = true break end
@@ -746,7 +688,6 @@ local function rebuildBayZones()
               return
             end
 
-            -- must be near the bay
             local vpos = GetEntityCoords(veh)
             local bpos = vec3(bay.x, bay.y, bay.z)
             if #(vpos - bpos) > 10.0 then
@@ -754,7 +695,6 @@ local function rebuildBayZones()
               return
             end
 
-            -- must be near the cut line point
             local off = (Config.V3 and Config.V3.cutLine and Config.V3.cutLine.offsetForward) or 2.2
             local rad = (Config.V3 and Config.V3.cutLine and Config.V3.cutLine.radius) or 3.0
             local h = math.rad((bay.w or 0.0) + 0.0)
@@ -766,12 +706,13 @@ local function rebuildBayZones()
               return
             end
 
-            inPartAction = true
-            if not doSkill('move_shell') then
-              inPartAction = false
+             inPartAction = true
+             if not skillCheck('move_shell') then
+              TriggerServerEvent('gs-chopshop:server:noteSkillFail')
               notify('Failed. Try again.', 'error')
+              inPartAction = false
               return
-            end
+             end
             local ok = progressBar('Aligning shell', 2000, 'mini@repair', 'fixing_a_ped')
             if ok then
               TriggerServerEvent('gs-chopshop:server:completeStep', 'move_shell')
@@ -787,11 +728,7 @@ local function rebuildBayZones()
     bayZones[#bayZones+1] = id
   end
 
-end -- rebuildBayZones
-
---========================================
--- CONTRACT FLOW EVENTS
---========================================
+end
 
 RegisterNetEvent("gs-chopshop:client:notify", function(msg, nType)
   notify(msg, nType)
@@ -809,7 +746,6 @@ RegisterNetEvent("gs-chopshop:client:beginSearch", function(c)
     setSearchBlips(activeContract.searchCenter, activeContract.searchRadius)
   end
 
-
   if Config.V3 and Config.V3.hints and Config.V3.hints.enabled then
     local nextKey = getNextRequiredStep()
     if nextKey == 'move_shell' then
@@ -823,7 +759,6 @@ RegisterNetEvent("gs-chopshop:client:beginSearch", function(c)
     end
   end
 end)
-
 
 RegisterNetEvent("gs-chopshop:client:foundAck", function()
   foundOnce = true
@@ -845,7 +780,6 @@ RegisterNetEvent("gs-chopshop:client:foundAck", function()
   end
 end)
 
-
 RegisterNetEvent("gs-chopshop:client:contractCanceled", function()
   activeContract = nil
   activeSession = nil
@@ -855,15 +789,14 @@ RegisterNetEvent("gs-chopshop:client:contractCanceled", function()
   clearSessionTargets()
   notify("Contract canceled.", "error")
 
-  -- Refresh tablet data after cancel
   CreateThread(function()
     Wait(250)
     TriggerServerEvent('gs-chopshop:server:requestData')
   end)
 end)
 
-RegisterNetEvent("gs-chopshop:client:contractCompleted", function(cash)
-  -- NUI completion cinematic
+RegisterNetEvent("gs-chopshop:client:contractCompleted", function(cash, extra)
+
   pcall(function()
     SendNUIMessage({
       type = 'completeCinematic',
@@ -872,6 +805,10 @@ RegisterNetEvent("gs-chopshop:client:contractCompleted", function(cash)
       plate = activeContract and activeContract.plate or nil,
       model = activeContract and activeContract.model or nil,
       modifiers = activeContract and activeContract.modifiers or {},
+      bonusObjective = (activeContract and activeContract.bonusObjective) or (extra and extra.bonus) or nil,
+      bonusAchieved = extra and extra.bonusAchieved or false,
+      bonusRep = extra and extra.bonusRep or 0,
+
     })
   end)
 
@@ -883,7 +820,6 @@ RegisterNetEvent("gs-chopshop:client:contractCompleted", function(cash)
   clearSessionTargets()
   notify(("Contract complete. +$%d"):format(tonumber(cash) or 0), "success")
 
-  -- Refresh tablet data (history/progress) after completion
   CreateThread(function()
     Wait(600)
     TriggerServerEvent('gs-chopshop:server:requestData')
@@ -904,7 +840,6 @@ RegisterNetEvent("gs-chopshop:client:chopSessionStarted", function(data)
   activeSession.timeMult = data.timeMult or activeSession.timeMult or 1.0
   activeSession.finalMult = data.finalMult or activeSession.finalMult or 1.0
 
-  -- Hardening: if server sends no required list (or empty), compute locally from the vehicle so order + gating works.
   if (not activeSession.requiredList) or (#activeSession.requiredList == 0) then
     local veh = getVehFromNet(data.netId)
     local t = GetGameTimer() + 1500
@@ -930,8 +865,6 @@ RegisterNetEvent("gs-chopshop:client:stepAck", function(stepKey)
   activeSession.done = activeSession.done or {}
   activeSession.done[stepKey] = true
 
-
-  -- Apply visuals only after server ack to prevent desync
   if PART_KEY_SET and PART_KEY_SET[stepKey] then
     local veh = getVehFromNet(activeSession.netId)
     if veh then
@@ -942,10 +875,9 @@ RegisterNetEvent("gs-chopshop:client:stepAck", function(stepKey)
   if stepKey ~= "final" then
     notify("Step complete.", "success")
   else
-    -- server will also send contractCompleted normally
+
     clearSessionTargets()
   end
-
 
   if Config.V3 and Config.V3.hints and Config.V3.hints.enabled then
     local nextKey = getNextRequiredStep()
@@ -961,9 +893,8 @@ RegisterNetEvent("gs-chopshop:client:stepAck", function(stepKey)
   end
 end)
 
-
 RegisterNetEvent("gs-chopshop:client:receiveData", function(data)
-  -- tablet refresh support
+
   if data and data.contract then
     activeContract = data.contract
     foundOnce = activeContract.found and true or false
@@ -980,18 +911,18 @@ RegisterNetEvent("gs-chopshop:client:receiveData", function(data)
   end
 
   if data and data.session then
+
     activeSession = activeSession or {}
 
     activeSession.netId = data.session.netId
     activeSession.bayIndex = data.session.bayIndex
     activeSession.done = data.session.done or activeSession.done or {}
 
-    -- NUI + ordering expects an ARRAY here.
     local incomingList = data.session.requiredList or data.session.required
     if type(incomingList) == 'table' and #incomingList > 0 then
       activeSession.requiredList = incomingList
     elseif not activeSession.requiredList or #activeSession.requiredList == 0 then
-      -- Fallback: compute locally if still missing
+
       local veh = activeSession.netId and getVehFromNet(activeSession.netId) or nil
       if veh and veh ~= 0 and DoesEntityExist(veh) then
         activeSession.requiredList = computeRequiredListForVehicle(veh)
@@ -1007,9 +938,6 @@ RegisterNetEvent("gs-chopshop:client:receiveData", function(data)
   end
 end)
 
---========================================
--- VEHICLE SPAWN (CLIENT-SIDE)
---========================================
 RegisterNetEvent("gs-chopshop:client:spawnContractVehicle", function(data)
   if Config.Debug then
     print("[GS-ChopShop] client spawnContractVehicle fired", json.encode(data))
@@ -1110,17 +1038,13 @@ RegisterNetEvent("gs-chopshop:client:spawnContractVehicle", function(data)
   SetModelAsNoLongerNeeded(model)
 end)
 
---========================================
--- REQUIRED-STEP MARKERS
---========================================
-
 local function drawStepMarker(stepKey)
   if not stepKey or not activeSession or not activeSession.netId then return end
   local veh = getVehFromNet(activeSession.netId)
   if not veh then return end
 
   local pos
-  -- Bone-based markers for part steps
+
   local bone = nil
   for _, p in ipairs(PARTS) do
     if p.key == stepKey then bone = p.bone break end
@@ -1145,7 +1069,6 @@ local function drawStepMarker(stepKey)
     pos = GetEntityCoords(veh)
   end
 
-  -- Red arrow marker hovering near the required spot
   DrawMarker(2, pos.x, pos.y, pos.z + 0.65, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 220, 30, 30, 180, false, true, 2, false, nil, nil, false)
 end
 
@@ -1165,9 +1088,6 @@ CreateThread(function()
   end
 end)
 
---========================================
--- FOUND VEHICLE DETECTOR
---========================================
 CreateThread(function()
   while true do
     Wait(600)
@@ -1195,9 +1115,6 @@ CreateThread(function()
   end
 end)
 
---========================================
--- CUT LINE MARKER (HELPER)
---========================================
 CreateThread(function()
   while true do
     Wait(0)
@@ -1217,7 +1134,6 @@ CreateThread(function()
       goto continue
     end
 
-    -- only show if move_shell is required
     local required = false
     if activeSession.requiredList then
       for _, k in ipairs(activeSession.requiredList) do
@@ -1248,12 +1164,6 @@ CreateThread(function()
   end
 end)
 
-
-
---========================================
--- GUIDE MARKERS (NEXT STEP ARROWS)
---========================================
-
 local function drawArrowAt(pos)
   if not pos then return end
   DrawMarker(2, pos.x, pos.y, pos.z + 1.25, 0.0, 0.0, 0.0, 0.0, 180.0, 0.0, 0.35, 0.35, 0.35, 180, 180, 255, 220, false, true, 2, false, nil, nil, false)
@@ -1276,7 +1186,7 @@ CreateThread(function()
         if nextKey then
           local veh = getVehFromNet(activeSession.netId)
           if veh and DoesEntityExist(veh) then
-            -- Cut line marker for move_shell (push stage)
+
             if nextKey == "move_shell" and Config.V3 and Config.V3.cutLine and Config.V3.cutLine.enabled and Config.V4.guides.showCutLineMarker then
               local bay = (Config.Bays or Config.ChopSpots or {})[activeSession.bayIndex or 1]
               if bay then
@@ -1291,7 +1201,7 @@ CreateThread(function()
                 end
               end
             else
-              -- Arrow over next part bone / front of vehicle
+
               local partPos = nil
               for _, p in ipairs(PARTS) do
                 if p.key == nextKey and p.bone then
@@ -1303,7 +1213,7 @@ CreateThread(function()
                 end
               end
               if not partPos then
-                -- pre steps bones
+
                 for _, s in ipairs(PRE_STEPS) do
                   if s.key == nextKey and s.bones and s.bones[1] then
                     local bi = GetEntityBoneIndexByName(veh, s.bones[1])
@@ -1333,7 +1243,6 @@ CreateThread(function()
   end
 end)
 
--- Auto-begin chop when driving the contract vehicle into a bay
 CreateThread(function()
   while true do
     Wait(350)
@@ -1355,7 +1264,6 @@ CreateThread(function()
     local plate = trimPlate(GetVehicleNumberPlateText(veh))
     if plate ~= trimPlate(activeContract.plate) then goto continue end
 
-    -- find bay within radius
     local bays = Config.Bays or Config.ChopSpots or {}
     local p = GetEntityCoords(veh)
     for i, bay in ipairs(bays) do
@@ -1378,8 +1286,6 @@ CreateThread(function()
   end
 end)
 
--- STARTUP / STOP
---========================================
 CreateThread(function()
   Wait(500)
   rebuildBayZones()
@@ -1405,3 +1311,72 @@ AddEventHandler("onResourceStop", function(res)
     end
   end
 end)
+
+RegisterNetEvent('gs-chopshop:client:bonusStatus', function(payload)
+  payload = payload or {}
+  if activeContract then
+    activeContract.bonus = activeContract.bonus or {}
+    activeContract.bonus.state = payload.state or activeContract.bonus.state or "active"
+  end
+  SendNUIMessage({
+    type = 'bonusStatus',
+    state = payload.state or 'active',
+    reason = payload.reason or '',
+  })
+end)
+
+RegisterNetEvent('gs-chopshop:client:coopInviteNearest', function()
+  if not Config.Coop or not Config.Coop.enabled then
+    notify('Co-op disabled.', 'error')
+    return
+  end
+  local ped = PlayerPedId()
+  local pcoords = GetEntityCoords(ped)
+  local closestPid, closestDist = -1, 9999.0
+
+  for _, pid in ipairs(GetActivePlayers()) do
+    if pid ~= PlayerId() then
+      local tp = GetPlayerPed(pid)
+      if tp and tp ~= 0 then
+        local c = GetEntityCoords(tp)
+        local d = #(pcoords - c)
+        if d < closestDist then
+          closestDist = d
+          closestPid = pid
+        end
+      end
+    end
+  end
+
+  if closestPid == -1 or closestDist > 4.0 then
+    notify('No player close enough to invite.', 'error')
+    return
+  end
+
+  TriggerServerEvent('gs-chopshop:server:coopInvite', GetPlayerServerId(closestPid))
+end)
+
+RegisterNetEvent('gs-chopshop:client:coopInvite', function(fromSrc)
+  if not Config.Coop or not Config.Coop.enabled then return end
+
+  if lib and lib.alertDialog then
+    local res = lib.alertDialog({
+      header = 'ChopShop Co-op Invite',
+      content = ('Operator %s invited you to join their run.'):format(tostring(fromSrc)),
+      centered = true,
+      cancel = true,
+      labels = { confirm = 'Accept', cancel = 'Decline' }
+    })
+    TriggerServerEvent('gs-chopshop:server:coopRespond', res == 'confirm')
+  else
+    notify(('Co-op invite from %s. Use /chopaccept or /chopdecline'):format(tostring(fromSrc)), 'inform')
+  end
+end)
+
+RegisterCommand('chopaccept', function()
+  TriggerServerEvent('gs-chopshop:server:coopRespond', true)
+end, false)
+
+RegisterCommand('chopdecline', function()
+  TriggerServerEvent('gs-chopshop:server:coopRespond', false)
+end, false)

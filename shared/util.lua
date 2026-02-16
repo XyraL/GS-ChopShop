@@ -15,7 +15,6 @@ function Util.Pick(t)
   return t[math.random(1, #t)]
 end
 
-
 function Util.Distance(a, b)
   local ax, ay, az = a.x or a[1], a.y or a[2], a.z or a[3]
   local bx, by, bz = b.x or b[1], b.y or b[2], b.z or b[3]

@@ -29,5 +29,5 @@ files {
 }
 
 dependencies {
-  'oxmysql', 
+  'oxmysql',
 }

@@ -16,7 +16,6 @@ local function openUI()
   SendNUIMessage({ type = "toggle", state = true })
 end
 
--- hard reset so it never auto opens on join/resource start
 AddEventHandler('onClientResourceStart', function(res)
   if res ~= GetCurrentResourceName() then return end
   Wait(200)
@@ -28,7 +27,6 @@ AddEventHandler('playerSpawned', function()
   hardClose()
 end)
 
--- server arms opening for a short window 
 RegisterNetEvent('gs-chopshop:client:armOpen', function()
   allowOpenUntil = GetGameTimer() + 2000
 end)
@@ -56,6 +54,11 @@ RegisterNUICallback("startContract", function(body, cb)
   cb(true)
 end)
 
+RegisterNUICallback("startSpecialContract", function(_, cb)
+  TriggerServerEvent('gs-chopshop:server:startSpecialContract')
+  cb(true)
+end)
+
 RegisterNUICallback("cancelContract", function(_, cb)
   TriggerServerEvent('gs-chopshop:server:cancelContract')
   cb(true)
@@ -66,9 +69,22 @@ RegisterNUICallback("refresh", function(_, cb)
   cb(true)
 end)
 
+RegisterNUICallback("saveProfile", function(body, cb)
+  local alias = body and body.alias or nil
+  local privacy = body and body.privacy or 1
+  TriggerServerEvent('gs-chopshop:server:setProfile', alias, privacy)
+  cb(true)
+end)
+
+RegisterNUICallback("coopInviteNearest", function(_, cb)
+  TriggerEvent('gs-chopshop:client:coopInviteNearest')
+  cb(true)
+end)
+
 RegisterNUICallback("buyUpgrade", function(body, cb)
   local id = body and body.id or 'unknown'
   TriggerServerEvent('gs-chopshop:server:buyUpgrade', id)
+
   CreateThread(function()
     Wait(250)
     TriggerServerEvent('gs-chopshop:server:requestData')

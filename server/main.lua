@@ -1,12 +1,18 @@
-local ActiveContracts = {} -- [src] = contract
-local ActiveSessions  = {} -- [src] = { netId, bayIndex, done = { [stepKey]=true } }
+local ActiveContracts = {}
+local ActiveSessions  = {}
+
+local Coop = {
+  leaderToPartner = {},
+  partnerToLeader = {},
+  pending = {},
+}
 
 local function resolveDbId(_, player)
   local cid = player and FW.GetCid(player) or nil
   return cid, cid, nil, nil
 end
 
-local Cooldowns       = {} -- [src] = os.time()
+local Cooldowns       = {}
 
 local function now() return os.time() end
 
@@ -53,7 +59,6 @@ end
 
 local NON_FINAL = nonFinalSteps()
 
--- Step order index 
 local STEP_INDEX = {}
 do
   local i = 0
@@ -76,7 +81,6 @@ local function computeRequiredStepsFromClient(requiredList)
   local requiredSet = {}
   local cleanList = {}
 
-  -- Build a whitelist set of valid non-final keys
   local valid = {}
   for _, k in ipairs(NON_FINAL) do
     if stepEnabledServer(k) then
@@ -94,7 +98,6 @@ local function computeRequiredStepsFromClient(requiredList)
     end
   end
 
-  -- Fallback: if client didn't send anything usable, require all enabled non-final steps
   if #cleanList == 0 then
     for _, k in ipairs(NON_FINAL) do
       if stepEnabledServer(k) then
@@ -107,7 +110,6 @@ local function computeRequiredStepsFromClient(requiredList)
   return requiredSet, cleanList
 end
 
-
 local function allNonFinalDone(done, requiredSet)
   requiredSet = requiredSet or {}
   for k, _ in pairs(requiredSet) do
@@ -117,16 +119,13 @@ local function allNonFinalDone(done, requiredSet)
 end
 
 local function randInCircle(radius)
-  -- uniform distribution in a circle
+
   local t = math.random() * 2.0 * math.pi
   local u = math.random()
   local r = math.sqrt(u) * radius
   return r * math.cos(t), r * math.sin(t)
 end
 
---==============================
--- Smarter Contracts: Modifiers
---==============================
 local function rollContractModifiers(tierKey)
   local cm = Config.ContractModifiers
   if not cm or not cm.enabled then return {}, { payout = 1.0, alert = 1.0, radius = 1.0, duration = 1.0 }, {} end
@@ -189,6 +188,85 @@ local function rollContractModifiers(tierKey)
   return mods, mults, forced
 end
 
+local function rollBonusObjective(tierKey)
+  local bo = Config.BonusObjectives
+  if not bo or not bo.enabled then return nil end
+  local chance = tonumber(bo.chance or 0) or 0
+  if chance <= 0 then return nil end
+  if math.random(1, 100) > chance then return nil end
+
+  local defs = bo.defs or {}
+  local pool, total = {}, 0
+  for id, def in pairs(defs) do
+    local w = tonumber(def.weight or 0) or 0
+    if w > 0 then
+      total = total + w
+      pool[#pool+1] = { id = id, w = w, def = def }
+    end
+  end
+  if total <= 0 or #pool == 0 then return nil end
+
+  local r = math.random() * total
+  local acc = 0
+  for _, it in ipairs(pool) do
+    acc = acc + (it.w or 0)
+    if r <= acc then
+      local def = it.def or {}
+      return {
+        id = it.id,
+        label = tostring(def.label or it.id),
+        desc = tostring(def.desc or ""),
+        moneyMult = tonumber(def.moneyMult or 1.0) or 1.0,
+        rep = tonumber(def.rep or 0) or 0,
+        timeLimitSeconds = tonumber(def.timeLimitSeconds or 0) or 0,
+        minBodyHealthRatio = tonumber(def.minBodyHealthRatio or 0) or 0,
+      }
+    end
+  end
+  return nil
+end
+
+local function sendBonusStatus(src, state, reason)
+  TriggerClientEvent('gs-chopshop:client:bonusStatus', src, {
+    state = state,
+    reason = reason or "",
+  })
+end
+
+local function applyBonusSignal(src, signal, reason)
+  local c = getContract(src)
+  if not c or not c.bonusObjective or not c.bonusObjective.id then return end
+
+  c.bonus = c.bonus or { state = "active", failed = false, achieved = false, strikes = 0 }
+  if c.bonus.state == "completed" or c.bonus.state == "failed" then return end
+
+  local strictFail = false
+  if signal == "skillfail" and (c.bonusObjective.id == "flawless_hands") then
+    strictFail = true
+  end
+  if signal == "alert" and (c.bonusObjective.id == "silent_operator") then
+    strictFail = true
+  end
+
+  if strictFail then
+    c.bonus.failed = true
+    c.bonus.state = "failed"
+    sendBonusStatus(src, "failed", reason or "Objective failed.")
+    return
+  end
+
+  c.bonus.strikes = (tonumber(c.bonus.strikes or 0) or 0) + 1
+
+  if c.bonus.strikes >= 2 then
+    c.bonus.failed = true
+    c.bonus.state = "failed"
+    sendBonusStatus(src, "failed", reason or "Objective failed.")
+  else
+    c.bonus.state = "at_risk"
+    sendBonusStatus(src, "at_risk", reason or "BONUS AT RISK")
+  end
+end
+
 local function spawnContractVehicle(contract)
   if not contract then return nil, "no_contract" end
 
@@ -207,14 +285,12 @@ local function spawnContractVehicle(contract)
     return nil, "invalid_model"
   end
 
-  -- Pick a random point inside the search radius around the center
   local radius = tonumber(contract.searchRadius) or 180.0
   local cx, cy, cz = contract.searchCenter.x, contract.searchCenter.y, contract.searchCenter.z
   local ox, oy = randInCircle(radius)
   local x, y = cx + ox, cy + oy
   local z = cz + 1.0
 
-  -- Random heading, or use spawnBase heading if you want
   local heading = math.random(0, 359) + 0.0
 
   if RequestModel then
@@ -239,12 +315,10 @@ local function spawnContractVehicle(contract)
   SetNetworkIdExistsOnAllMachines(netId, true)
   SetNetworkIdCanMigrate(netId, false)
 
-  -- store back into contract
   contract.netId = netId
 
   return veh, nil
 end
-
 
 local function makeContract(src, tierKey, uinfo)
   local tier = Config.Tiers[tierKey]
@@ -263,8 +337,9 @@ end
   local spawnBase = Util.Pick(Config.SpawnPoints)
   local plate = Util.MakePlate()
 
-  -- Roll modifiers (smarter contracts)
   local mods, mmults, forcedSteps = rollContractModifiers(tierKey)
+
+  local bonusObj = rollBonusObjective(tierKey)
 
   local radius = (Config.Search and Config.Search.radius) or 180.0
   radius = radius * (tonumber(mmults.radius or 1.0) or 1.0)
@@ -275,7 +350,7 @@ end
 
   local duration = (Config.Contract and Config.Contract.durationSeconds) or 1800
   duration = math.floor(duration * (tonumber(mmults.duration or 1.0) or 1.0))
-  duration = math.max(300, duration) -- never under 5 minutes
+  duration = math.max(300, duration)
 
   local c = {
     tier = tierKey,
@@ -289,7 +364,6 @@ end
     netId = nil,
     found = false,
 
-    -- modifiers
     modifiers = mods,
     modMult = {
       payout = mmults.payout or 1.0,
@@ -298,6 +372,9 @@ end
       duration = mmults.duration or 1.0,
     },
     forcedSteps = forcedSteps,
+
+    bonusObjective = bonusObj,
+    bonus = { state = bonusObj and "active" or "none", failed = false, achieved = false },
   }
 
   return c
@@ -342,6 +419,9 @@ end
 local function enforceTierUnlock(src, player, tierKey)
   local cid = FW.GetCid(player)
   local prog = DB.GetTierProgress(cid) or { tier1 = 0, tier2 = 0, tier3 = 0 }
+  local rep = (DB and DB.GetRep) and DB.GetRep(cid) or 0
+  local rl = Config.RepUnlocks or {}
+  prog.rep = (DB.GetRep and DB.GetRep(cid)) or 0
   local req = Config.Unlocks or { tier2RequiresTier1 = 0, tier3RequiresTier2 = 0 }
 
   if tierKey == 'tier2' and (prog.tier1 or 0) < (req.tier2RequiresTier1 or 0) then
@@ -371,32 +451,83 @@ getUpgradeInfo = function(cid)
     return math.floor(base * (pm ^ (level or 0)))
   end
 
-  -- multipliers (defaults)
   local timeMult = 1.0
   local payoutMult = 1.0
   local alertMult = 1.0
   local radiusMult = 1.0
   local finalMult = 1.0
 
-  if cfg.chop_speed then
-    local lv = tonumber(u.chop_speed or 0) or 0
-    timeMult = math.max(cfg.chop_speed.minTimeMult or 0.55, 1.0 - (cfg.chop_speed.timeReducePerLevel or 0.05) * lv)
+  local function lv(key) return tonumber(u[key] or 0) or 0 end
+  local function cfgOf(key) return cfg[key] end
+
+  do
+    local reduce = 0.0
+    local minM = 0.55
+    local keys = { 'chop_speed', 'tech_hand', 'shop_lift' }
+    for _, k in ipairs(keys) do
+      local c = cfgOf(k)
+      if c then
+        reduce = reduce + (tonumber(c.timeReducePerLevel or 0) or 0) * lv(k)
+        minM = math.min(minM, tonumber(c.minTimeMult or minM) or minM)
+      end
+    end
+    timeMult = math.max(minM, 1.0 - reduce)
   end
-  if cfg.clean_payout then
-    local lv = tonumber(u.clean_payout or 0) or 0
-    payoutMult = math.min(cfg.clean_payout.maxPayoutMult or 3.0, 1.0 + (cfg.clean_payout.payoutBonusPerLevel or 0.10) * lv)
+
+  do
+    local bonus = 0.0
+    local maxM = 3.0
+    local keys = { 'clean_payout', 'broker_cut', 'shop_compactor', 'net_fence', 'net_forgery', 'net_parts' }
+    for _, k in ipairs(keys) do
+      local c = cfgOf(k)
+      if c then
+        bonus = bonus + (tonumber(c.payoutBonusPerLevel or 0) or 0) * lv(k)
+        maxM = math.max(maxM, tonumber(c.maxPayoutMult or maxM) or maxM)
+      end
+    end
+    payoutMult = math.min(maxM, 1.0 + bonus)
   end
-  if cfg.heat_dampener then
-    local lv = tonumber(u.heat_dampener or 0) or 0
-    alertMult = math.max(cfg.heat_dampener.minAlertMult or 0.35, 1.0 - (cfg.heat_dampener.alertReducePerLevel or 0.08) * lv)
+
+  do
+    local reduce = 0.0
+    local minM = 0.35
+    local keys = { 'heat_dampener', 'shop_dampening' }
+    for _, k in ipairs(keys) do
+      local c = cfgOf(k)
+      if c then
+        reduce = reduce + (tonumber(c.alertReducePerLevel or 0) or 0) * lv(k)
+        minM = math.min(minM, tonumber(c.minAlertMult or minM) or minM)
+      end
+    end
+    alertMult = math.max(minM, 1.0 - reduce)
   end
-  if cfg.scanner then
-    local lv = tonumber(u.scanner or 0) or 0
-    radiusMult = math.max(cfg.scanner.minRadiusMult or 0.55, 1.0 - (cfg.scanner.radiusReducePerLevel or 0.10) * lv)
+
+  do
+    local reduce = 0.0
+    local minM = 0.55
+    local keys = { 'scanner', 'runner_instinct' }
+    for _, k in ipairs(keys) do
+      local c = cfgOf(k)
+      if c then
+        reduce = reduce + (tonumber(c.radiusReducePerLevel or 0) or 0) * lv(k)
+        minM = math.min(minM, tonumber(c.minRadiusMult or minM) or minM)
+      end
+    end
+    radiusMult = math.max(minM, 1.0 - reduce)
   end
-  if cfg.auto_dispatch then
-    local lv = tonumber(u.auto_dispatch or 0) or 0
-    finalMult = math.max(cfg.auto_dispatch.minFinalMult or 0.55, 1.0 - (cfg.auto_dispatch.finalReducePerLevel or 0.10) * lv)
+
+  do
+    local reduce = 0.0
+    local minM = 0.55
+    local keys = { 'auto_dispatch', 'shop_shredder' }
+    for _, k in ipairs(keys) do
+      local c = cfgOf(k)
+      if c then
+        reduce = reduce + (tonumber(c.finalReducePerLevel or 0) or 0) * lv(k)
+        minM = math.min(minM, tonumber(c.minFinalMult or minM) or minM)
+      end
+    end
+    finalMult = math.max(minM, 1.0 - reduce)
   end
 
   local out = {
@@ -407,6 +538,16 @@ getUpgradeInfo = function(cid)
       heat_dampener = priceFor('heat_dampener', u.heat_dampener or 0),
       scanner = priceFor('scanner', u.scanner or 0),
       auto_dispatch = priceFor('auto_dispatch', u.auto_dispatch or 0),
+      tech_hand = priceFor('tech_hand', u.tech_hand or 0),
+      runner_instinct = priceFor('runner_instinct', u.runner_instinct or 0),
+      broker_cut = priceFor('broker_cut', u.broker_cut or 0),
+      shop_lift = priceFor('shop_lift', u.shop_lift or 0),
+      shop_dampening = priceFor('shop_dampening', u.shop_dampening or 0),
+      shop_compactor = priceFor('shop_compactor', u.shop_compactor or 0),
+      shop_shredder = priceFor('shop_shredder', u.shop_shredder or 0),
+      net_fence = priceFor('net_fence', u.net_fence or 0),
+      net_forgery = priceFor('net_forgery', u.net_forgery or 0),
+      net_parts = priceFor('net_parts', u.net_parts or 0),
     },
     caps = {
       chop_speed = (cfg.chop_speed and cfg.chop_speed.maxLevel) or 0,
@@ -414,6 +555,16 @@ getUpgradeInfo = function(cid)
       heat_dampener = (cfg.heat_dampener and cfg.heat_dampener.maxLevel) or 0,
       scanner = (cfg.scanner and cfg.scanner.maxLevel) or 0,
       auto_dispatch = (cfg.auto_dispatch and cfg.auto_dispatch.maxLevel) or 0,
+      tech_hand = (cfg.tech_hand and cfg.tech_hand.maxLevel) or 0,
+      runner_instinct = (cfg.runner_instinct and cfg.runner_instinct.maxLevel) or 0,
+      broker_cut = (cfg.broker_cut and cfg.broker_cut.maxLevel) or 0,
+      shop_lift = (cfg.shop_lift and cfg.shop_lift.maxLevel) or 0,
+      shop_dampening = (cfg.shop_dampening and cfg.shop_dampening.maxLevel) or 0,
+      shop_compactor = (cfg.shop_compactor and cfg.shop_compactor.maxLevel) or 0,
+      shop_shredder = (cfg.shop_shredder and cfg.shop_shredder.maxLevel) or 0,
+      net_fence = (cfg.net_fence and cfg.net_fence.maxLevel) or 0,
+      net_forgery = (cfg.net_forgery and cfg.net_forgery.maxLevel) or 0,
+      net_parts = (cfg.net_parts and cfg.net_parts.maxLevel) or 0,
     },
     mult = {
       time = timeMult,
@@ -427,10 +578,10 @@ getUpgradeInfo = function(cid)
   return out
 end
 
-
 local function pushData(src)
   local player = FW.GetPlayer(src)
   if not player then return end
+
   local cid = FW.GetCid(player)
   local dbid = cid
   local contract = getContract(src)
@@ -439,6 +590,8 @@ local function pushData(src)
   local top = (Config.Leaderboard and Config.Leaderboard.enabled) and DB.GetTop(Config.Leaderboard.topCount or 10) or {}
   local hist = DB.GetHistory(dbid, 10)
   local prog = DB.GetTierProgress(dbid)
+  prog.rep = (DB.GetRep and DB.GetRep(dbid)) or 0
+  local profile = (DB.GetProfile and DB.GetProfile(dbid)) or { alias = nil, privacy = 1 }
   local uinfo = dbid and getUpgradeInfo(dbid) or nil
 
   local safeSession = nil
@@ -473,12 +626,19 @@ local function pushData(src)
       searchRadius = contract.searchRadius,
       found = contract.found and true or false,
       modifiers = contract.modifiers or {},
+      special = contract.special and true or false,
+      specialTag = contract.specialTag,
     } or nil,
     session = safeSession,
     leaderboard = top,
     history = hist,
     progress = prog,
     upgrades = uinfo,
+    profile = profile,
+    special = {
+      repRequired = (Config.SpecialContracts and Config.SpecialContracts.repRequired) or 0,
+      enabled = (Config.SpecialContracts and Config.SpecialContracts.enabled) and true or false,
+    },
   })
 end
 
@@ -524,7 +684,7 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
     DB.SetUpgrade(dbid, upgradeId, current + 1)
   end)
   if not ok then
-    -- Refund on DB failure so upgrades never "eat" money.
+
     FW.AddMoney(player, acct, price)
     print(('^1[gs-chopshop]^0 Upgrade DB error (%s): %s'):format(upgradeId, tostring(err)))
     TriggerClientEvent('gs-chopshop:client:notify', src, 'Upgrade purchase failed (DB). Refunded.', 'error')
@@ -535,7 +695,6 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
   TriggerClientEvent('gs-chopshop:client:notify', src,
     ('%s upgraded to Level %d.'):format(uc.label or upgradeId, current + 1), 'success')
 
-  -- Push twice: once now, and again shortly after (covers slower DB backends)
   pushData(src)
   CreateThread(function()
     Wait(350)
@@ -543,10 +702,6 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
   end)
 end)
 
--- Admin/debug:
---   /choptest            -> tier1, $5000
---   /choptest tier2      -> tier2, $5000
---   /choptest tier3 9000 -> tier3, $9000
 RegisterCommand('choptest', function(src, args)
   if src == 0 then return end
 
@@ -568,10 +723,10 @@ RegisterCommand('choptest', function(src, args)
   local dbid, cid, license = resolveDbId(src, player)
   local name = FW.GetName(player)
 
-  -- Write stats/progress like a successful completion.
   local ok, err = pcall(function()
     if DB and DB.AddResult then
-      DB.AddResult(dbid, name, tierKey, 'debug_test', earned, true)
+      local baseRep = (Config.Reputation and tonumber(Config.Reputation.basePerChop or 0)) or 0
+      DB.AddResult(dbid, name, tierKey, 'debug_test', earned, true, baseRep)
     end
     if DB and DB.AddTierProgress then
       DB.AddTierProgress(dbid, tierKey)
@@ -585,6 +740,7 @@ RegisterCommand('choptest', function(src, args)
   end
 
   local prog = (DB and DB.GetTierProgress) and DB.GetTierProgress(dbid) or { tier1 = 0, tier2 = 0, tier3 = 0 }
+  prog.rep = (DB and DB.GetRep and DB.GetRep(dbid)) or 0
 
   TriggerClientEvent('gs-chopshop:client:notify', src,
     ('ChopTest: %s +$%d | Progress now: T1=%d T2=%d T3=%d'):format(tierKey, earned, prog.tier1 or 0, prog.tier2 or 0, prog.tier3 or 0),
@@ -600,7 +756,6 @@ RegisterCommand('choptest', function(src, args)
   end)
 end, false)
 
--- Admin/debug: print identifier resolution + DB row counts (helps diagnose "DB has data but UI shows 0").
 RegisterCommand('chopdebug', function(src)
   if src == 0 then return end
   if not IsPlayerAceAllowed(src, 'gs-chopshop.admin') then
@@ -616,6 +771,7 @@ RegisterCommand('chopdebug', function(src)
   local tiersLic = (DB and DB.HasTierRow and license) and (DB.HasTierRow(license) and 1 or 0) or 0
 
   local prog = (DB and DB.GetTierProgress) and DB.GetTierProgress(dbid) or { tier1 = 0, tier2 = 0, tier3 = 0 }
+  prog.rep = (DB and DB.GetRep and DB.GetRep(dbid)) or 0
 
   print(('^3[gs-chopshop]^0 chopdebug src=%s cid=%s license=%s dbid=%s tiersRow[cid]=%s tiersRow[license]=%s prog=%s')
     :format(src, tostring(cid), tostring(license), tostring(dbid), tiersCid, tiersLic, json.encode(prog)))
@@ -658,7 +814,6 @@ RegisterCommand('chopdb', function(src)
   end
 end, true)
 
-
 RegisterNetEvent('gs-chopshop:server:startContract', function(tierKey)
   local src = source
   local player = FW.GetPlayer(src)
@@ -689,7 +844,7 @@ RegisterNetEvent('gs-chopshop:server:startContract', function(tierKey)
   ActiveContracts[src] = contract
   setCooldown(src)
 
-Wait(0) 
+Wait(0)
 
 TriggerClientEvent('gs-chopshop:client:spawnContractVehicle', src, {
   model = contract.model,
@@ -707,9 +862,139 @@ TriggerClientEvent('gs-chopshop:client:spawnContractVehicle', src, {
     searchCenter = contract.searchCenter,
     searchRadius = contract.searchRadius,
     modifiers = contract.modifiers or {},
+    bonusObjective = contract.bonusObjective,
+
   })
 
   pushData(src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:startSpecialContract', function()
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+
+  local sc = Config.SpecialContracts or {}
+  if not sc.enabled then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Special contracts are disabled.', 'error')
+    return
+  end
+
+  if onCooldown(src) then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You must wait before starting another contract.', 'error')
+    return
+  end
+  if getContract(src) then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You already have an active contract.', 'error')
+    return
+  end
+
+  local cid = FW.GetCid(player)
+  local rep = (DB and DB.GetRep) and (DB.GetRep(cid) or 0) or 0
+  local need = tonumber(sc.repRequired or 0) or 0
+  if rep < need then
+    TriggerClientEvent('gs-chopshop:client:notify', src, ('Need %d REP for Special Contracts.'):format(need), 'error')
+    return
+  end
+
+  local dbid = resolveDbId(src, player)
+  local uinfo = dbid and getUpgradeInfo(dbid) or nil
+  local contract, err = makeContract(src, sc.baseTier or 'tier3', uinfo)
+  if not contract then
+    TriggerClientEvent('gs-chopshop:client:notify', src, err or 'Failed to create special contract.', 'error')
+    return
+  end
+
+  contract.special = true
+  contract.specialTag = tostring(sc.label or 'BLACK OPS')
+  contract.modMult = contract.modMult or { payout = 1.0, alert = 1.0, radius = 1.0, duration = 1.0 }
+  contract.modMult.payout = (contract.modMult.payout or 1.0) * (tonumber(sc.payoutMult or 1.35) or 1.35)
+  contract.modMult.alert  = (contract.modMult.alert or 1.0)  * (tonumber(sc.alertMult  or 1.10) or 1.10)
+
+  local wantMin = tonumber(sc.minMods or 2) or 2
+  if (contract.modifiers and #contract.modifiers or 0) < wantMin then
+
+    local oldMin, oldMax = Config.ContractModifiers.minActive, Config.ContractModifiers.maxActive
+    Config.ContractModifiers.minActive = wantMin
+    Config.ContractModifiers.maxActive = math.max(wantMin, tonumber(sc.maxMods or 3) or 3)
+    contract.modifiers, contract.modMult, contract.forcedSteps = rollContractModifiers(contract.tier)
+
+    contract.modMult.payout = (contract.modMult.payout or 1.0) * (tonumber(sc.payoutMult or 1.35) or 1.35)
+    contract.modMult.alert  = (contract.modMult.alert or 1.0)  * (tonumber(sc.alertMult  or 1.10) or 1.10)
+    Config.ContractModifiers.minActive, Config.ContractModifiers.maxActive = oldMin, oldMax
+  end
+
+  if sc.forceBonusObjective then
+    contract.bonusObjective = rollBonusObjective(contract.tier) or contract.bonusObjective
+    contract.bonus = { state = contract.bonusObjective and 'active' or 'none', failed = false, achieved = false }
+  end
+
+  ActiveContracts[src] = contract
+  setCooldown(src)
+
+  Wait(0)
+  TriggerClientEvent('gs-chopshop:client:spawnContractVehicle', src, {
+    model = contract.model,
+    plate = contract.plate,
+    searchCenter = contract.searchCenter,
+    searchRadius = contract.searchRadius
+  })
+
+  TriggerClientEvent('gs-chopshop:client:beginSearch', src, {
+    tier = contract.tier,
+    model = contract.model,
+    plate = contract.plate,
+    startedAt = contract.startedAt,
+    expiresAt = contract.expiresAt,
+    searchCenter = contract.searchCenter,
+    searchRadius = contract.searchRadius,
+    modifiers = contract.modifiers or {},
+    bonusObjective = contract.bonusObjective,
+    specialTag = contract.specialTag,
+  })
+
+  pushData(src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:setProfile', function(alias, privacy)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  if DB and DB.SetProfile then
+    DB.SetProfile(cid, alias, privacy)
+  end
+  pushData(src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:coopInvite', function(target)
+  local src = source
+  target = tonumber(target or 0) or 0
+  if target <= 0 or GetPlayerPing(target) <= 0 then return end
+  if src == target then return end
+
+  Coop.pending[target] = { from = src, expires = now() + 30 }
+  TriggerClientEvent('gs-chopshop:client:coopInvite', target, src)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Invite sent.', 'inform')
+end)
+
+RegisterNetEvent('gs-chopshop:server:coopRespond', function(accept)
+  local target = source
+  local p = Coop.pending[target]
+  if not p or (p.expires or 0) < now() then
+    Coop.pending[target] = nil
+    return
+  end
+  Coop.pending[target] = nil
+  local leader = p.from
+  if not accept then
+    TriggerClientEvent('gs-chopshop:client:notify', leader, 'Invite declined.', 'error')
+    return
+  end
+  Coop.leaderToPartner[leader] = target
+  Coop.partnerToLeader[target] = leader
+  TriggerClientEvent('gs-chopshop:client:notify', leader, 'Co-op linked.', 'success')
+  TriggerClientEvent('gs-chopshop:client:notify', target, 'Co-op linked.', 'success')
 end)
 
 RegisterNetEvent('gs-chopshop:server:cancelContract', function()
@@ -728,7 +1013,6 @@ RegisterNetEvent('gs-chopshop:server:cancelContract', function()
   TriggerClientEvent('gs-chopshop:client:contractCanceled', src)
   pushData(src)
 end)
-
 
 RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, plate)
   local src = source
@@ -749,7 +1033,6 @@ RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, pl
 
   c.netId = tonumber(netId)
 
-  -- PD alert on start
   if Config.PDAlert and Config.PDAlert.enabled and Config.PDAlert.onStart then
     local veh = NetworkGetEntityFromNetworkId(c.netId)
     if veh and veh ~= 0 and DoesEntityExist(veh) then
@@ -760,11 +1043,11 @@ RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, pl
       if c and c.modMult and c.modMult.alert then
         mult = mult * (tonumber(c.modMult.alert) or 1.0)
       end
-      Alerts.Try(src, c.tier, GetEntityCoords(veh), c.plate, c.model, mult)
+      local alerted = Alerts.Try(src, c.tier, GetEntityCoords(veh), c.plate, c.model, mult)
+      if alerted then applyBonusSignal(src, "alert", "Alert triggered") end
     end
   end
 end)
-
 
 RegisterNetEvent('gs-chopshop:server:markFound', function(netId, plate)
   local src = source
@@ -774,13 +1057,11 @@ RegisterNetEvent('gs-chopshop:server:markFound', function(netId, plate)
 
   if trimPlate(plate) ~= trimPlate(c.plate) then return end
 
-  -- accept and store whatever netId the player found
   c.netId = tonumber(netId) or c.netId
   c.found = true
 
   TriggerClientEvent('gs-chopshop:client:foundAck', src)
 end)
-
 
 RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requiredList)
   local src = source
@@ -856,12 +1137,12 @@ RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requi
     if c and c.modMult and c.modMult.alert then
       mult = mult * (tonumber(c.modMult.alert) or 1.0)
     end
-    Alerts.Try(src, c.tier, vpos, c.plate, c.model, mult)
+    local alerted = Alerts.Try(src, c.tier, vpos, c.plate, c.model, mult)
+      if alerted then applyBonusSignal(src, "alert", "Alert triggered") end
   end
 
   local requiredSet, requiredList = computeRequiredStepsFromClient(requiredList)
 
-  -- Apply forced steps from smarter-contract modifiers
   if c and c.forcedSteps and type(c.forcedSteps) == 'table' then
     for sk, _ in pairs(c.forcedSteps) do
       sk = tostring(sk)
@@ -894,18 +1175,31 @@ ActiveSessions[src] = {
   startedAt = now(),
   timeMult = mults.time or 1.0,
   finalMult = mults.final or 1.0,
+  failedSkill = false,
+  alertTriggered = (c and c.bonus and c.bonus.failed) and true or false,
+  startBodyHealth = GetVehicleBodyHealth(veh) or 1000.0,
+
 }
 
 TriggerClientEvent('gs-chopshop:client:chopSessionStarted', src, {
   netId = netId,
   bayIndex = bayIndex,
   done = {},
+
   requiredList = requiredList,
   timeMult = mults.time or 1.0,
   finalMult = mults.final or 1.0,
 })
 end)
 
+RegisterNetEvent("gs-chopshop:server:noteSkillFail", function()
+  local src = source
+  local sess = ActiveSessions[src]
+  if sess then
+    sess.failedSkill = true
+  end
+  applyBonusSignal(src, "skillfail", "Skill check failed")
+end)
 
 RegisterNetEvent('gs-chopshop:server:completeStep', function(stepKey)
   local src = source
@@ -933,17 +1227,14 @@ if stepKey ~= 'final' then
   end
 end
 
-  -- Optional strict ordering
   if stepKey ~= 'final' and Config.V3 and Config.V3.enforceStepOrder then
     for _, s in ipairs(Config.AdvancedSteps or {}) do
       local k = tostring(s.key or '')
       if k == '' or k == 'final' then goto continue_order end
       if not stepEnabledServer(k) then goto continue_order end
 
-      -- Stop once we reached the requested step
       if k == stepKey then break end
 
-      -- Only enforce required steps for this vehicle
       if sess.required and sess.required[k] and not sess.done[k] then
         TriggerClientEvent('gs-chopshop:client:notify', src, 'Finish earlier steps first.', 'error')
         return
@@ -998,12 +1289,84 @@ end
   if stepKey == 'final' then
     local cash = giveFinalRewards(src, c)
 
+    local repNow = 0
+    local dbidForRep = resolveDbId(src, player)
+    if DB and DB.GetRep and dbidForRep then repNow = DB.GetRep(dbidForRep) end
+    local repMult = computeRepPayoutMult(repNow)
+    if repMult > 1.0 then
+      local repExtra = math.floor(cash * math.max(0.0, repMult - 1.0))
+      if repExtra > 0 then
+        local p = FW.GetPlayer(src)
+        if p then FW.AddMoney(p, "cash", repExtra) end
+        cash = cash + repExtra
+      end
+    end
+
+    local bonusAchieved, bonusMult, bonusRep = false, 1.0, 0
+    if c and c.bonusObjective and c.bonusObjective.id then
+      local bo = c.bonusObjective
+      local failed = (c.bonus and c.bonus.failed) or false
+      if bo.id == "speed_run" and (bo.timeLimitSeconds or 0) > 0 then
+        bonusAchieved = (not failed) and ((now() - (c.startedAt or now())) <= bo.timeLimitSeconds)
+      elseif bo.id == "clean_work" and (bo.minBodyHealthRatio or 0) > 0 then
+        local startH = tonumber(sess.startBodyHealth or 1000.0) or 1000.0
+        local endH = tonumber(GetVehicleBodyHealth(veh) or 1000.0) or 1000.0
+        if startH <= 0 then startH = 1000.0 end
+        bonusAchieved = (not failed) and ((endH / startH) >= bo.minBodyHealthRatio)
+      elseif bo.id == "silent_operator" then
+        bonusAchieved = (not failed) and (not (sess.alertTriggered or false))
+      elseif bo.id == "flawless_hands" then
+        bonusAchieved = (not failed) and (not (sess.failedSkill or false))
+      end
+
+      if bonusAchieved then
+        bonusMult = tonumber(bo.moneyMult or 1.0) or 1.0
+        bonusRep = tonumber(bo.rep or 0) or 0
+        local extra = math.floor(cash * math.max(0.0, (bonusMult - 1.0)))
+        if extra > 0 then
+          local p = FW.GetPlayer(src)
+          if p then FW.AddMoney(p, "cash", extra) end
+          cash = cash + extra
+        end
+      end
+
+      c.bonus = c.bonus or { state = "active", failed = false, achieved = false }
+      c.bonus.achieved = bonusAchieved
+      if bonusAchieved then
+        c.bonus.state = "completed"
+        sendBonusStatus(src, "completed", "Bonus objective completed")
+      else
+        c.bonus.state = "failed"
+        sendBonusStatus(src, "failed", "Bonus objective failed")
+      end
+    end
+
     local dbid = resolveDbId(src, player)
     local name = FW.GetName(player)
 
     local ok, err = pcall(function()
       if DB and DB.AddResult then
-        DB.AddResult(dbid, name, c.tier, c.model, cash, true)
+        local baseRep = (Config.Reputation and tonumber(Config.Reputation.basePerChop or 0)) or 0
+        local repGain = baseRep
+        if bonusAchieved and bonusRep and bonusRep > 0 then repGain = repGain + bonusRep end
+        DB.AddResult(dbid, name, c.tier, c.model, cash, true, repGain)
+
+        local partner = Coop.leaderToPartner[src]
+        if partner and GetPlayerPing(partner) > 0 then
+          local share = (Config.Coop and tonumber(Config.Coop.partnerShare or 0.35)) or 0.35
+          share = math.max(0.05, math.min(0.75, share))
+          local cut = math.floor(cash * share)
+          local repCut = math.max(0, math.floor(repGain * ((Config.Coop and tonumber(Config.Coop.partnerRepShare or 1.0)) or 1.0)))
+          local pp = FW.GetPlayer(partner)
+          if pp and cut > 0 then
+            FW.AddMoney(pp, 'cash', cut)
+          end
+          if pp and DB and DB.AddResult then
+            local pcid = FW.GetCid(pp)
+            local pname = FW.GetName(pp)
+            DB.AddResult(pcid, pname, c.tier, c.model, cut, true, repCut)
+          end
+        end
       end
       if DB and DB.AddTierProgress then
         DB.AddTierProgress(dbid, c.tier)
@@ -1020,9 +1383,13 @@ end
 
     clearContract(src)
 
-    TriggerClientEvent('gs-chopshop:client:notify', src,
-      ('Chop complete! Earned $%d + materials.'):format(cash), 'success')
-    TriggerClientEvent('gs-chopshop:client:contractCompleted', src, cash)
+    local msg = ("Chop complete! Earned $%d + materials."):format(cash)
+    if bonusAchieved and bonusRep and bonusRep > 0 then
+      msg = msg .. (" (+%d rep)"):format(bonusRep)
+    end
+    TriggerClientEvent('gs-chopshop:client:notify', src, msg, 'success')
+    TriggerClientEvent('gs-chopshop:client:contractCompleted', src, cash, { bonus = c and c.bonusObjective or nil, bonusAchieved = bonusAchieved, bonusRep = bonusRep })
+
     pushData(src)
     CreateThread(function()
       Wait(350)

@@ -26,9 +26,22 @@
           <div class="completeCash" id="completeCash">+$0</div>
           <div class="completeMeta" id="completeMeta">—</div>
           <div class="completeMods" id="completeMods"></div>
+          <div class="completeBonus" id="completeBonus"></div>
           <div class="completeHint">Press ESC to close tablet</div>
         </div>
       </div>
+      <!-- Contract Intro Overlay -->
+      <div id="introOverlay" class="introOverlay" aria-hidden="true">
+        <div class="introCard">
+          <div class="introSweep"></div>
+          <div class="introTop">NEW CONTRACT</div>
+          <div class="introMeta" id="introMeta">—</div>
+          <div class="introMods" id="introMods"></div>
+          <div class="introBonus" id="introBonus"></div>
+          <div class="introFoot">Locate the vehicle. Keep it quiet.</div>
+        </div>
+      </div>
+
       <aside class="side">
         <div class="brand">
           <div class="logo"><div class="orb"></div></div>
@@ -96,7 +109,10 @@
                   <div class="cardTitle">Active Contract</div>
                   <div class="cardSub">Everything you need, nothing you don’t.</div>
                 </div>
+                <div class="headBtns">
+                  <button id="coopBtn" class="btn ghost" disabled>Invite Co-op</button>
                 <button id="cancelBtn" class="btn danger" disabled>Cancel Contract</button>
+                </div>
               </div>
 
               <div class="kv">
@@ -129,6 +145,10 @@
                 </div>
 
                 <div id="modChips" class="modChips" aria-label="Contract modifiers"></div>
+                <div id="bonusBox" class="bonusBox" aria-label="Bonus objective"></div>
+                <div id="bonusStatusRow" class="bonusStatusRow hidden"><span id="bonusStatusPill" class="bonusPill active">ACTIVE</span><div id="bonusStatusText" class="bonusStatusText"></div></div>
+                <div id="bonusWarn" class="bonusWarn hidden">BONUS AT RISK</div>
+
 
                 <div class="checkHead">
                   <button id="checkToggle" class="btn ghost small">Show checklist</button>
@@ -177,6 +197,12 @@
                   <button id="tier3Btn" class="btn primary">Start Tier 3</button>
                 </div>
               </div>
+
+              <div class="divider"></div>
+              <div class="specialRow">
+                <button id="specialBtn" class="btn gold">Special Contracts</button>
+                <div class="specialHint" id="specialHint">Requires REP: --</div>
+              </div>
             </section>
           </div>
         </section>
@@ -192,11 +218,21 @@
                 </div>
               </div>
               <div class="luxHeader">
-                <div class="luxBadge">BLACK LABEL</div>
-                <div class="luxHint" id="upgMsg">Spend smart. Stack advantage.</div>
+                <div class="luxBadge">BLACK MARKET</div>
+                <div class="luxHint" id="upgMsg">Build your operator. Upgrade your shop. Grow your network.</div>
               </div>
 
-              <div id="upgList" class="upgList"></div>
+              <div class="subTabs" role="tablist" aria-label="Upgrade categories">
+                <button class="subTab active" data-subtab="personal">Personal</button>
+                <button class="subTab" data-subtab="shop">Shop</button>
+                <button class="subTab" data-subtab="network">Network</button>
+              </div>
+
+              <div class="upgPanels">
+                <div id="upgPersonal" class="upgList upgPanel active" data-panel="personal"></div>
+                <div id="upgShop" class="upgList upgPanel" data-panel="shop"></div>
+                <div id="upgNetwork" class="upgList upgPanel" data-panel="network"></div>
+              </div>
             </section>
             <section class="card cardGlow">
               <div class="cardHead">
@@ -273,6 +309,19 @@
                   <div class="setRight">
                     <button class="chip" id="themeNeon" data-theme="neon">Neon Noir</button>
                     <button class="chip" id="themeCarbon" data-theme="carbon">Carbon Glass</button>
+                    <button class="chip" id="themeTerminal" data-theme="terminal">Terminal</button>
+                    <button class="chip" id="themeObsidian" data-theme="obsidian">Obsidian</button>
+                  </div>
+                </div>
+
+                <div class="setRow">
+                  <div class="setLeft">
+                    <div class="setK">Operator Alias</div>
+                    <div class="setS">Shown on leaderboard (hides real names).</div>
+                  </div>
+                  <div class="setRight">
+                    <input id="aliasInput" class="textInput" type="text" maxlength="32" placeholder="e.g. NightRunner" />
+                    <button id="aliasSave" class="btn primary small">Save</button>
                   </div>
                 </div>
 

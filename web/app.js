@@ -1,4 +1,4 @@
-/* GS-ChopShop NUI */
+/* GS-ChopShop NUI (Revamp V5) - ES5 Safe */
 (function () {
   'use strict';
 
@@ -16,14 +16,33 @@
     upgrades: null
   };
 
-  // Upgrades
-  var upgrades = [
-    { id: 'chop_speed', name: 'Chop Speed', desc: 'Reduce action time across dismantle steps.', price: 25000, tag: '+10% faster', locked: false },
-    { id: 'clean_payout', name: 'Clean Payout', desc: 'Boost final cash payout when the shell is disposed.', price: 40000, tag: '+10% payout', locked: false },
-    { id: 'heat_dampener', name: 'Heat Dampener', desc: 'Lower the chance of police attention during a run.', price: 60000, tag: '-10% heat', locked: false },
-    { id: 'scanner', name: 'Scanner Suite', desc: 'Tighten search radius on higher tiers for faster finds.', price: 85000, tag: 'Smaller zone', locked: true },
-    { id: 'auto_dispatch', name: 'Auto Dispatch', desc: 'Streamline final disposal. Less waiting, more runs.', price: 120000, tag: 'Faster finish', locked: true }
-  ];
+  // Upgrades (Personal / Shop / Network)
+  var upgradeSets = {
+    personal: [
+      { id: 'tech_hand', name: 'Technician Hands', desc: 'Faster, cleaner dismantle actions. Less wasted motion.', price: 15000, tag: 'Speed stack', locked: false },
+      { id: 'runner_instinct', name: 'Runner Instinct', desc: 'Tighter search radius and quicker target finds.', price: 20000, tag: 'Smaller zone', locked: false },
+      { id: 'scanner', name: 'Scanner Suite', desc: 'Tighten search radius on higher tiers for faster finds.', price: 85000, tag: 'Pinpoint', locked: true }
+    ],
+    shop: [
+      { id: 'shop_lift', name: 'Hydraulic Lift', desc: 'Cuts step time across part removal. Shop-grade speed.', price: 35000, tag: 'Faster pulls', locked: false },
+      { id: 'chop_speed', name: 'Chop Speed', desc: 'Reduce action time across dismantle steps.', price: 25000, tag: '+10% faster', locked: false },
+      { id: 'shop_dampening', name: 'Sound Dampening', desc: 'Lower heat gain. Quiet work, quiet streets.', price: 45000, tag: '-heat', locked: false },
+      { id: 'heat_dampener', name: 'Heat Dampener', desc: 'Lower the chance of police attention during a run.', price: 60000, tag: '-heat', locked: false },
+      { id: 'shop_compactor', name: 'Scrap Compactor', desc: 'Better scrap recovery. More value per shell.', price: 55000, tag: '+payout', locked: false },
+      { id: 'shop_shredder', name: 'Shell Shredder', desc: 'Faster disposal phase. Clear bays quicker.', price: 70000, tag: 'Faster finish', locked: true },
+      { id: 'auto_dispatch', name: 'Auto Dispatch', desc: 'Streamline final disposal. Less waiting, more runs.', price: 120000, tag: 'Faster finish', locked: true }
+    ],
+    network: [
+      { id: 'broker_cut', name: 'Broker Cut', desc: 'Better buyers, better money. Increases payout.', price: 30000, tag: '+payout', locked: false },
+      { id: 'clean_payout', name: 'Clean Payout', desc: 'Boost final cash payout when the shell is disposed.', price: 40000, tag: '+10% payout', locked: false },
+      { id: 'net_fence', name: 'Fence Connections', desc: 'Higher sell-through and better routing for hot parts.', price: 60000, tag: '+payout', locked: false },
+      { id: 'net_parts', name: 'Parts Market', desc: 'Turns removed parts into premium demand. More profit.', price: 50000, tag: '+payout', locked: false },
+      { id: 'net_forgery', name: 'Forgery Lab', desc: 'Clean titles, clean money. High-tier payout scaling.', price: 90000, tag: 'High value', locked: true }
+    ]
+  };
+
+  var activeUpgTab = 'personal';
+
 
   function post(name, data) {
     data = data || {};
@@ -32,6 +51,7 @@
       headers: { 'Content-Type': 'application/json; charset=UTF-8' },
       body: JSON.stringify(data)
     }).catch(function () {
+      // swallow fetch errors
     });
   }
 
@@ -146,7 +166,7 @@
     }
   }
 
-  // --- Cinematic SFX ---
+  // --- Cinematic SFX (no external libs) ---
   var SFX = (function(){
     var ctx = null;
     function getCtx(){
@@ -237,16 +257,18 @@
       if ($('timeline')) $('timeline').innerHTML = '';
       $('checklist').innerHTML = '';
       $('cancelBtn').disabled = true;
+      if ($('coopBtn')) $('coopBtn').disabled = true;
       return;
     }
 
     $('cancelBtn').disabled = false;
+    if ($('coopBtn')) $('coopBtn').disabled = false;
 
     var rem = (c.expiresAt || 0) - st;
     if (rem < 0) rem = 0;
     $('liveTimer').textContent = fmtMMSS(rem);
     $('liveSub').textContent = escapeHtml(c.model) + ' • plate locked';
-    $('tierPill').textContent = 'TIER: ' + String(c.tier || '').toUpperCase();
+    $('tierPill').textContent = (c.specialTag ? (String(c.specialTag).toUpperCase()) : ('TIER: ' + String(c.tier || '').toUpperCase()));
     $('platePill').textContent = 'PLATE: ' + String(c.plate || '').toUpperCase();
     $('activeTier').textContent = c.tier || '-';
     $('activeVeh').textContent = c.model || '-';
@@ -275,6 +297,48 @@
         }
       }
     } catch (eM) {}
+
+    // Bonus objective (with live status)
+    try {
+      var bb = $("bonusBox");
+      var row = $("bonusStatusRow");
+      var pill = $("bonusStatusPill");
+      var txt = $("bonusStatusText");
+
+      if (bb) bb.innerHTML = "";
+
+      if (!c || !c.bonusObjective || !c.bonusObjective.label) {
+        if (row) row.classList.add("hidden");
+      } else {
+        var b = c.bonusObjective;
+        var stt = (c.bonus && c.bonus.state) ? String(c.bonus.state) : "active";
+        var pretty = stt === "at_risk" ? "AT RISK" : (stt === "failed" ? "FAILED" : (stt === "completed" ? "COMPLETED" : "ACTIVE"));
+
+        if (bb) {
+          bb.innerHTML =
+            "<div class=\"bonusRow\">" +
+              "<span class=\"bonusTag\">BONUS</span>" +
+              "<div class=\"bonusText\">" +
+                "<div class=\"bonusLabel\">" + escapeHtml(b.label) + "</div>" +
+                "<div class=\"bonusDesc\">" + escapeHtml(b.desc || "") + "</div>" +
+              "</div>" +
+            "</div>";
+        }
+
+        if (row) row.classList.remove("hidden");
+        if (pill) {
+          pill.textContent = pretty;
+          pill.className = "bonusPill " + (stt || "active");
+        }
+        if (txt) {
+          // show reward info
+          var parts = [];
+          if (b.moneyMult && Number(b.moneyMult) > 1) parts.push("+" + Math.round((Number(b.moneyMult) - 1) * 100) + "% cash");
+          if (b.rep && Number(b.rep) > 0) parts.push("+" + Number(b.rep) + " rep");
+          txt.textContent = parts.length ? ("Reward: " + parts.join(" • ")) : "";
+        }
+      }
+    } catch (eB) {}
 
     $('stepCount').textContent = 'Step ' + String(Math.min(prog.done + 1, Math.max(prog.total, 1))) + ' / ' + String(prog.total || 0);
     $('progressPct').textContent = String(prog.pct) + '%';
@@ -307,7 +371,7 @@
     var rows = '';
     for (var i = 0; i < (state.leaderboard || []).length; i++) {
       var r = state.leaderboard[i];
-      rows += '<div class="row"><div class="rowLeft">#' + (i + 1) + ' ' + escapeHtml(r.name || r.citizenid || 'Player') + '</div><div class="rowRight">' + escapeHtml(String(r.chops || 0)) + '</div></div>';
+      rows += '<div class="row"><div class="rowLeft">#' + (i + 1) + ' ' + escapeHtml(r.display || r.name || r.citizenid || 'Operator') + '</div><div class="rowRight">' + escapeHtml(String(r.chops || 0)) + '</div></div>';
     }
     $('lbList').innerHTML = rows || '<div class="muted">No data yet.</div>';
   }
@@ -323,14 +387,22 @@
 
   function renderSystem() {
     var p = state.progress || { tier1: 0, tier2: 0, tier3: 0 };
-    $('sysText').innerHTML =
+    $("sysText").innerHTML =
       '<div class="sysK">Tier 1 completed:</div><div class="sysV">' + escapeHtml(String(p.tier1 || 0)) + '</div>' +
       '<div class="sysK">Tier 2 completed:</div><div class="sysV">' + escapeHtml(String(p.tier2 || 0)) + '</div>' +
-      '<div class="sysK">Tier 3 completed:</div><div class="sysV">' + escapeHtml(String(p.tier3 || 0)) + '</div>';
+      '<div class="sysK">Tier 3 completed:</div><div class="sysV">' + escapeHtml(String(p.tier3 || 0)) + '</div>' +
+      '<div class="sysK">Reputation:</div><div class="sysV">' + escapeHtml(String(p.rep || 0)) + '</div>';
+
+    try {
+      var prof = state.profile || {};
+      var ai = $('aliasInput');
+      if (ai) ai.value = prof.alias || '';
+    } catch (eP) {}
+
   }
 
-  function renderUpgrades() {
-    var el = $('upgList');
+  function renderUpgradesPanel(panelId, list) {
+    var el = $(panelId);
     if (!el) return;
 
     var upState = state.upgrades || {};
@@ -339,14 +411,15 @@
     var caps = upState.caps || {};
 
     var html = '';
-    for (var i = 0; i < upgrades.length; i++) {
-      var u = upgrades[i];
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i];
       var level = parseInt(lv[u.id] || 0, 10) || 0;
       var cap = parseInt(caps[u.id] || 0, 10) || 0;
       var maxed = cap > 0 && level >= cap;
       var price = parseInt(prices[u.id] || u.price || 0, 10) || 0;
       var disabled = (u.locked || maxed) ? 'disabled' : '';
       var btnTxt = u.locked ? 'Locked' : (maxed ? 'Maxed' : 'Purchase');
+
       html +=
         '<div class="upgItem luxShimmer">'
           + '<div class="upgLeft">'
@@ -360,9 +433,9 @@
           + '</div>'
         + '</div>';
     }
-    el.innerHTML = html;
 
-    // bind purchase buttons
+    el.innerHTML = html || '<div class="muted">No upgrades.</div>';
+
     var btns = el.querySelectorAll('[data-upg]');
     for (var j = 0; j < btns.length; j++) {
       (function (b) {
@@ -377,6 +450,12 @@
     }
   }
 
+  function renderUpgrades() {
+    renderUpgradesPanel('upgPersonal', upgradeSets.personal);
+    renderUpgradesPanel('upgShop', upgradeSets.shop);
+    renderUpgradesPanel('upgNetwork', upgradeSets.network);
+  }
+
   function renderTiers() {
     var c = state.contract;
     var unlocks = state.unlocks || {};
@@ -384,18 +463,48 @@
     var t1 = $('tier1Btn'), t2 = $('tier2Btn'), t3 = $('tier3Btn');
     if (!t1) return;
 
+    var rep = (prog && prog.rep) ? Number(prog.rep) : 0;
+    var ru = state.repUnlocks || {};
+
     var locked2 = unlocks.tier2RequiresTier1 && (prog.tier1 || 0) < unlocks.tier2RequiresTier1;
     var locked3 = unlocks.tier3RequiresTier2 && (prog.tier2 || 0) < unlocks.tier3RequiresTier2;
+
+    var repLock2 = ru.tier2Rep && Number(ru.tier2Rep) > 0 && rep < Number(ru.tier2Rep);
+    var repLock3 = ru.tier3Rep && Number(ru.tier3Rep) > 0 && rep < Number(ru.tier3Rep);
+    locked2 = locked2 || repLock2;
+    locked3 = locked3 || repLock3;
 
     t1.disabled = !!c;
     t2.disabled = !!c || locked2;
     t3.disabled = !!c || locked3;
 
-    $('tier2Lock').textContent = locked2 ? ('Locked: complete ' + unlocks.tier2RequiresTier1 + ' Tier 1') : 'Unlocked';
-    $('tier3Lock').textContent = locked3 ? ('Locked: complete ' + unlocks.tier3RequiresTier2 + ' Tier 2') : 'Unlocked';
+    $('tier2Lock').textContent = locked2 ? (repLock2 ? ('Locked: need ' + ru.tier2Rep + ' rep') : ('Locked: complete ' + unlocks.tier2RequiresTier1 + ' Tier 1')) : 'Unlocked';
+    $('tier3Lock').textContent = locked3 ? (repLock3 ? ('Locked: need ' + ru.tier3Rep + ' rep') : ('Locked: complete ' + unlocks.tier3RequiresTier2 + ' Tier 2')) : 'Unlocked';
+
+    // Special contracts (rep-gated)
+    var sc = state.special || { enabled:false, repRequired:0 };
+    var sb = $('specialBtn');
+    var sh = $('specialHint');
+    if (sh) sh.textContent = sc.enabled ? ('Requires REP: ' + Number(sc.repRequired || 0)) : 'Special disabled';
+    if (sb) sb.disabled = !!c || !sc.enabled || (rep < Number(sc.repRequired || 0));
   }
 
-  function renderAll() {
+  
+  function showBonusWarn(text) {
+    var bw = $('bonusWarn');
+    if (!bw) return;
+    bw.classList.remove('hidden');
+    bw.textContent = String(text || 'BONUS AT RISK');
+    // restart animation
+    bw.classList.remove('show');
+    void bw.offsetWidth;
+    bw.classList.add('show');
+    setTimeout(function(){
+      bw.classList.remove('show');
+    }, 2300);
+  }
+
+function renderAll() {
     renderContractPanel();
     renderTiers();
     renderLeaderboard();
@@ -417,12 +526,48 @@
     $('tier2Btn').onclick = function () { post('startContract', { tier: 'tier2' }); setTimeout(function () { post('refresh'); }, 200); };
     $('tier3Btn').onclick = function () { post('startContract', { tier: 'tier3' }); setTimeout(function () { post('refresh'); }, 200); };
 
+    var specialBtn = $('specialBtn');
+    if (specialBtn) {
+      specialBtn.onclick = function () { post('startSpecialContract'); setTimeout(function () { post('refresh'); }, 250); };
+    }
+
+    var coopBtn = $('coopBtn');
+    if (coopBtn) {
+      coopBtn.onclick = function () { post('coopInviteNearest'); };
+    }
+
     var tabBtns = document.querySelectorAll('[data-tab]');
     for (var i = 0; i < tabBtns.length; i++) {
       (function (btn) {
         btn.onclick = function () { setTab(btn.getAttribute('data-tab')); };
       })(tabBtns[i]);
     }
+
+    // Upgrade sub-tabs (Personal / Shop / Network)
+    function setUpgTab(t) {
+      activeUpgTab = t || 'personal';
+      var btns2 = document.querySelectorAll('.subTab');
+      for (var b = 0; b < btns2.length; b++) {
+        var bt = btns2[b];
+        bt.classList.toggle('active', bt.getAttribute('data-subtab') === activeUpgTab);
+      }
+      var panels = document.querySelectorAll('.upgPanel');
+      for (var p = 0; p < panels.length; p++) {
+        var pa = panels[p];
+        pa.classList.toggle('active', pa.getAttribute('data-panel') === activeUpgTab);
+      }
+    }
+
+    var subBtns = document.querySelectorAll('[data-subtab]');
+    for (var s = 0; s < subBtns.length; s++) {
+      (function (btn) {
+        btn.onclick = function () {
+          setUpgTab(btn.getAttribute('data-subtab'));
+          renderUpgrades();
+        };
+      })(subBtns[s]);
+    }
+    setUpgTab(activeUpgTab);
 
     $('checkToggle').onclick = function () {
       var wrap = $('checkWrap');
@@ -439,20 +584,44 @@
 
     function applyTheme(t) {
       if (!app) return;
-      t = (t === 'carbon') ? 'carbon' : 'neon';
+      var allowed = { neon:1, carbon:1, terminal:1, obsidian:1 };
+      t = allowed[t] ? t : 'neon';
       app.setAttribute('data-theme', t);
       if (themeNeon) themeNeon.classList.toggle('active', t === 'neon');
       if (themeCarbon) themeCarbon.classList.toggle('active', t === 'carbon');
+      var themeTerminal = $('themeTerminal');
+      var themeObsidian = $('themeObsidian');
+      if (themeTerminal) themeTerminal.classList.toggle('active', t === 'terminal');
+      if (themeObsidian) themeObsidian.classList.toggle('active', t === 'obsidian');
       try { localStorage.setItem('gs_chopshop_theme', t); } catch (e) {}
     }
 
     function applyScale(v) {
+      // Apply scale only when the user commits (change/pointerup) to avoid jitter.
       v = Math.max(85, Math.min(115, parseInt(v, 10) || 100));
       var z = (v / 100);
       document.documentElement.style.setProperty('--uiZoom', String(z));
       if (uiScaleVal) uiScaleVal.textContent = String(v) + '%';
       if (uiScale) uiScale.value = String(v);
       try { localStorage.setItem('gs_chopshop_scale', String(v)); } catch (e) {}
+    }
+
+    // theme chips
+    if (themeNeon) themeNeon.onclick = function(){ applyTheme('neon'); };
+    if (themeCarbon) themeCarbon.onclick = function(){ applyTheme('carbon'); };
+    var themeTerminal = $('themeTerminal');
+    var themeObsidian = $('themeObsidian');
+    if (themeTerminal) themeTerminal.onclick = function(){ applyTheme('terminal'); };
+    if (themeObsidian) themeObsidian.onclick = function(){ applyTheme('obsidian'); };
+
+    // profile
+    var aliasSave = $('aliasSave');
+    if (aliasSave) {
+      aliasSave.onclick = function(){
+        var alias = ($('aliasInput') && $('aliasInput').value) || '';
+        post('saveProfile', { alias: alias, privacy: 1 });
+        setTimeout(function(){ post('refresh'); }, 250);
+      };
     }
 
     // Load persisted values
@@ -509,6 +678,24 @@
             chip.textContent = m.label || m.id || 'Modifier';
             modsEl.appendChild(chip);
           }
+
+          var bonusEl = $("completeBonus");
+          if (bonusEl) {
+            bonusEl.innerHTML = "";
+            if (msg.bonusObjective && msg.bonusObjective.label) {
+              var b = msg.bonusObjective;
+              var line = document.createElement("div");
+              line.className = "cBonus";
+              var rep = Number(msg.bonusRep || 0) || 0;
+              if (msg.bonusAchieved) {
+                line.innerHTML = "<span class=\"bTag\">BONUS COMPLETE</span> " + escapeHtml(b.label) + (rep > 0 ? (" <span class=\"bRep\">+" + rep + " rep</span>") : "");
+              } else {
+                line.innerHTML = "<span class=\"bTag fail\">BONUS</span> " + escapeHtml(b.label);
+              }
+              bonusEl.appendChild(line);
+            }
+          }
+
           ov.classList.remove('show');
           ov.offsetHeight;
           ov.classList.add('show');
@@ -527,6 +714,28 @@
         post('refresh');
       }
       return;
+
+    if (msg.type === 'bonusStatus') {
+      try {
+        if (state.contract) {
+          state.contract.bonus = state.contract.bonus || {};
+          state.contract.bonus.state = msg.state || state.contract.bonus.state || 'active';
+        }
+        // Live status UI
+        renderContractPanel();
+
+        // Mid-run warning banner
+        var st = String(msg.state || '');
+        if (st === 'at_risk') {
+          showBonusWarn(msg.reason || 'BONUS AT RISK');
+        } else if (st === 'failed') {
+          showBonusWarn(msg.reason || 'BONUS FAILED');
+        } else if (st === 'completed') {
+          showBonusWarn('BONUS COMPLETE');
+        }
+      } catch(eB){}
+      return;
+    }
     }
 
     if (msg.type === 'data') {
@@ -546,7 +755,11 @@
       state.leaderboard = d.leaderboard || [];
       state.history = d.history || [];
       state.progress = d.progress || null;
+      state.repUnlocks = d.repUnlocks || null;
+      state.repPerk = d.repPerk || null;
       state.upgrades = d.upgrades || null;
+      state.profile = d.profile || null;
+      state.special = d.special || null;
 
       // Contract start: gold scan sweep + sfx
       try {
@@ -561,6 +774,46 @@
             setTimeout(function(){ try{ app.classList.remove('scan'); }catch(e){} }, 950);
           }
           SFX.scan();
+          // Contract intro sequence (cinematic card)
+          try {
+            var io = $("introOverlay");
+            if (io) {
+              var meta2 = [];
+              meta2.push(String(state.contract.tier || "").toUpperCase());
+              if (state.contract.model) meta2.push(String(state.contract.model));
+              if (state.contract.plate) meta2.push("PLATE " + String(state.contract.plate));
+              $("introMeta").textContent = meta2.join(" • ");
+
+              // Mods
+              var im = $("introMods");
+              if (im) {
+                im.innerHTML = "";
+                var mods2 = state.contract.modifiers || [];
+                for (var ii = 0; ii < mods2.length; ii++) {
+                  var m2 = mods2[ii] || {};
+                  var chip2 = document.createElement("div");
+                  chip2.className = "modChip";
+                  chip2.innerHTML = "<span class=\"modDot\"></span><span>" + escapeHtml(m2.label || m2.id || "Modifier") + "</span>";
+                  im.appendChild(chip2);
+                }
+              }
+
+              // Bonus
+              var ib = $("introBonus");
+              if (ib) {
+                ib.innerHTML = "";
+                if (state.contract.bonusObjective && state.contract.bonusObjective.label) {
+                  var b2 = state.contract.bonusObjective;
+                  ib.innerHTML = "<div class=\"bonusRow\"><span class=\"bonusTag\">BONUS</span><div class=\"bonusText\"><div class=\"bonusLabel\">" + escapeHtml(b2.label) + "</div><div class=\"bonusDesc\">" + escapeHtml(b2.desc || "") + "</div></div></div>";
+                }
+              }
+
+              io.classList.add("show");
+              SFX.whoosh();
+              setTimeout(function(){ try{ io.classList.remove("show"); }catch(e){} }, 2600);
+            }
+          } catch(eIntro) {}
+
         }
       } catch (e) {}
 
