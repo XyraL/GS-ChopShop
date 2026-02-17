@@ -41,7 +41,7 @@
     ]
   };
 
-  var activeUpgTab = 'personal';
+  var activeUpgTab = 'all';
 
 
   function post(name, data) {
@@ -137,6 +137,143 @@
       .replace(/>/g, '&gt;')
       .replace(/\"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  function fmtMult(x) {
+    var n = Number(x || 1);
+    if (isNaN(n)) n = 1;
+    return n.toFixed(2);
+  }
+  function fmtPct(x) {
+    var n = Number(x || 0);
+    if (isNaN(n)) n = 0;
+    var s = (Math.round(n * 1000) / 10).toFixed(1);
+    if (s.indexOf('.0') === s.length - 2) s = String(Math.round(n * 100));
+    return s + '%';
+  }
+
+  var lastUpgLevels = null;
+  var lastUpgMult = null;
+  var pendingBuy = {}; // id -> ts
+
+  function toast(title, body) {
+    var host = $('toastHost');
+    if (!host) return;
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = '<div class="tTitle">' + escapeHtml(title) + '</div><div class="tBody">' + escapeHtml(body || '') + '</div>';
+    host.appendChild(t);
+    setTimeout(function () {
+      try { t.style.opacity = '0'; t.style.transform = 'translateY(6px)'; } catch(e){}
+      setTimeout(function () { try { host.removeChild(t); } catch(e){} }, 220);
+    }, 2200);
+  }
+
+  function playSuccessBlip() {
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      var ctx = new Ctx();
+      var o = ctx.createOscillator();
+      var g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.value = 0.0001;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+      o.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.16);
+      o.stop(ctx.currentTime + 0.17);
+      setTimeout(function(){ try{ ctx.close(); } catch(e){} }, 220);
+    } catch (e) {}
+  }
+
+  function heatRipple() {
+    var el = $('heatRipple');
+    if (!el) return;
+    el.classList.remove('play');
+    // force reflow
+    void el.offsetWidth;
+    el.classList.add('play');
+  }
+
+  function setTotals(mult) {
+    var el = $('upgTotals');
+    if (!el) return;
+    mult = mult || {};
+    var txt = 'Time x' + fmtMult(mult.time) + ' • Payout x' + fmtMult(mult.payout) + ' • Alert x' + fmtMult(mult.alert) + ' • Radius x' + fmtMult(mult.radius) + ' • Final x' + fmtMult(mult.final);
+    el.textContent = txt;
+  }
+
+  function pulseTotalsIfChanged(mult) {
+    var el = $('upgTotals');
+    if (!el) return;
+    if (!lastUpgMult) { lastUpgMult = JSON.stringify(mult || {}); return; }
+    var nowS = JSON.stringify(mult || {});
+    if (nowS !== lastUpgMult) {
+      el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
+      lastUpgMult = nowS;
+    }
+  }
+
+  function getUpgDef(id) {
+    var u = (state.upgrades && state.upgrades.defs && state.upgrades.defs[id]) ? state.upgrades.defs[id] : null;
+    return u;
+  }
+
+  function effectTextFor(id, level) {
+    var def = getUpgDef(id);
+    if (!def) return '';
+    var per = Number(def.per || 0);
+    var stat = String(def.stat || '');
+    var mode = String(def.mode || '');
+    if (mode === 'bonus') {
+      var cur = per * level;
+      return (stat.charAt(0).toUpperCase() + stat.slice(1)) + ': +' + fmtPct(cur);
+    }
+    if (mode === 'reduce') {
+      var curR = per * level;
+      return (stat.charAt(0).toUpperCase() + stat.slice(1)) + ': -' + fmtPct(curR);
+    }
+    return '';
+  }
+
+  function nextPreviewFor(id, level, cap) {
+    var def = getUpgDef(id);
+    if (!def) return '';
+    if (cap && level >= cap) return '';
+    var per = Number(def.per || 0);
+    var stat = String(def.stat || '');
+    var mode = String(def.mode || '');
+    var cur = per * level;
+    var nxt = per * (level + 1);
+    var label = stat.charAt(0).toUpperCase() + stat.slice(1);
+    if (mode === 'bonus') return label + ': +' + fmtPct(cur) + ' → +' + fmtPct(nxt);
+    if (mode === 'reduce') return label + ': -' + fmtPct(cur) + ' → -' + fmtPct(nxt);
+    return '';
+  }
+
+  function renderPerksDefault() {
+    var el = $('upgPerks');
+    if (!el) return;
+    el.innerHTML =
+      '<div class="note"><b>Hover an upgrade</b> to see what it changes.</div>' +
+      '<div class="note">Your totals update live as you buy levels.</div>' +
+      '<div class="note">Pro tip: stack <b>Time</b> reductions to fly through dismantle steps.</div>';
+  }
+
+  function renderPerksFor(u, level, cap) {
+    var el = $('upgPerks');
+    if (!el || !u) return;
+    var eff = effectTextFor(u.id, level);
+    var nxt = nextPreviewFor(u.id, level, cap);
+    el.innerHTML =
+      '<div class="note"><b>' + escapeHtml(u.name) + '</b> ' + escapeHtml(u.desc || '') + '</div>' +
+      (eff ? ('<div class="note"><b>Current</b>: ' + escapeHtml(eff) + '</div>') : '') +
+      (nxt ? ('<div class="note"><b>Next</b>: ' + escapeHtml(nxt) + '</div>') : '') +
+      (u.tag ? ('<div class="note"><b>Tag</b>: ' + escapeHtml(u.tag) + '</div>') : '') +
+      '<div class="note">Category: <b>' + escapeHtml((u.category || '').toUpperCase()) + '</b></div>';
   }
 
   function fmtCash(n){
@@ -256,6 +393,24 @@
       $('progressBarFill').style.width = '0%';
       if ($('timeline')) $('timeline').innerHTML = '';
       $('checklist').innerHTML = '';
+    // Right column swap: tiers -> checklist when contract is active
+    try {
+      var tW = $('tiersWrap');
+      var cW = $('rightChecklistWrap');
+      var rC = $('rightChecklist');
+      if (tW && cW && rC) {
+        if (c) {
+          tW.classList.add('hidden');
+          cW.classList.remove('hidden');
+          rC.innerHTML = list || '<div class="muted">No steps yet.</div>';
+        } else {
+          tW.classList.remove('hidden');
+          cW.classList.add('hidden');
+          rC.innerHTML = '';
+        }
+      }
+    } catch(e){}
+
       $('cancelBtn').disabled = true;
       if ($('coopBtn')) $('coopBtn').disabled = true;
       return;
@@ -365,6 +520,24 @@
     }
     if ($('timeline')) $('timeline').innerHTML = tl || '<div class="muted">No steps yet.</div>';
     $('checklist').innerHTML = list || '<div class="muted">No steps yet.</div>';
+    // Right column swap: tiers -> checklist when contract is active
+    try {
+      var tW = $('tiersWrap');
+      var cW = $('rightChecklistWrap');
+      var rC = $('rightChecklist');
+      if (tW && cW && rC) {
+        if (c) {
+          tW.classList.add('hidden');
+          cW.classList.remove('hidden');
+          rC.innerHTML = list || '<div class="muted">No steps yet.</div>';
+        } else {
+          tW.classList.remove('hidden');
+          cW.classList.add('hidden');
+          rC.innerHTML = '';
+        }
+      }
+    } catch(e){}
+
   }
 
   function renderLeaderboard() {
@@ -418,45 +591,131 @@
       var maxed = cap > 0 && level >= cap;
       var price = parseInt(prices[u.id] || u.price || 0, 10) || 0;
       var disabled = (u.locked || maxed) ? 'disabled' : '';
-      var btnTxt = u.locked ? 'Locked' : (maxed ? 'Maxed' : 'Purchase');
+      var btnTxt = u.locked ? 'Locked' : (maxed ? 'MAXED' : 'Purchase');
+
+      var next = nextPreviewFor(u.id, level, cap);
+      var eff = effectTextFor(u.id, level);
 
       html +=
-        '<div class="upgItem luxShimmer">'
+        '<div class="upgItem luxShimmer" data-upgrow="' + escapeHtml(u.id) + '">'
           + '<div class="upgLeft">'
             + '<div class="upgName">' + escapeHtml(u.name) + '</div>'
             + '<div class="upgDesc">' + escapeHtml(u.desc) + '</div>'
-            + '<div class="upgTags"><span class="upgTag">' + escapeHtml(u.tag) + '</span></div>'
+            + '<div class="upgTags"><span class="upgTag">' + escapeHtml(u.tag || '') + '</span><span class="upgTag subtle">' + escapeHtml(String(u.category || '').toUpperCase()) + '</span></div>'
           + '</div>'
           + '<div class="upgRight">'
-            + '<div class="upgPrice">Lvl ' + escapeHtml(String(level)) + (cap ? (' / ' + escapeHtml(String(cap))) : '') + ' • $' + escapeHtml(String(price)) + '</div>'
-            + '<button class="btn gold" data-upg="' + escapeHtml(u.id) + '" ' + disabled + '>' + btnTxt + '</button>'
+            + '<div class="upgMetaRow">'
+              + '<div class="upgPrice">Lvl ' + escapeHtml(String(level)) + (cap ? (' / ' + escapeHtml(String(cap))) : '') + ' • $' + escapeHtml(String(price)) + '</div>'
+              + (next ? ('<div class="upgNext">' + escapeHtml(next) + '</div>') : '')
+              + (eff ? ('<div class="upgEffect">' + escapeHtml(eff) + '</div>') : '')
+            + '</div>'
+            + '<button class="btn gold ' + (maxed ? 'maxed' : '') + '" data-upg="' + escapeHtml(u.id) + '" ' + disabled + '>' + btnTxt + '</button>'
+            + '<div class="upgProg"><span></span></div>'
           + '</div>'
         + '</div>';
     }
 
     el.innerHTML = html || '<div class="muted">No upgrades.</div>';
 
+    // hover -> perks panel
+    var rows = el.querySelectorAll('[data-upgrow]');
+    for (var r = 0; r < rows.length; r++) {
+      (function(row){
+        row.onmouseenter = function(){
+          var id = row.getAttribute('data-upgrow');
+          for (var k = 0; k < list.length; k++){
+            if (String(list[k].id) === String(id)) {
+              var level = parseInt(lv[id] || 0, 10) || 0;
+              var cap = parseInt(caps[id] || 0, 10) || 0;
+              renderPerksFor(list[k], level, cap);
+              break;
+            }
+          }
+        };
+        row.onmouseleave = function(){ renderPerksDefault(); };
+      })(rows[r]);
+    }
+
     var btns = el.querySelectorAll('[data-upg]');
     for (var j = 0; j < btns.length; j++) {
       (function (b) {
         b.onclick = function () {
           var id = b.getAttribute('data-upg');
+          if (!id) return;
+          pendingBuy[id] = Date.now();
+          // buying animation
+          try {
+            var row = el.querySelector('[data-upgrow="' + id + '"]');
+            if (row) row.classList.add('buying');
+            b.disabled = true;
+          } catch(e){}
           post('buyUpgrade', { id: id });
           var msg = $('upgMsg');
-          if (msg) msg.textContent = 'Purchase requested.';
-          setTimeout(function(){ post('refresh'); }, 250);
+          if (msg) msg.textContent = 'Processing upgrade...';
+          setTimeout(function(){ post('refresh'); }, 220);
         };
       })(btns[j]);
     }
   }
 
   function renderUpgrades() {
-    renderUpgradesPanel('upgPersonal', upgradeSets.personal);
-    renderUpgradesPanel('upgShop', upgradeSets.shop);
-    renderUpgradesPanel('upgNetwork', upgradeSets.network);
-  }
+    var tab = activeUpgTab || 'all';
+    var qEl = $('upgSearchInput');
+    var q = qEl ? String(qEl.value || '').toLowerCase() : '';
 
-  function renderTiers() {
+    try { if (state.upgrades && state.upgrades.mult) { setTotals(state.upgrades.mult); pulseTotalsIfChanged(state.upgrades.mult); } } catch(e){}
+    renderPerksDefault();
+
+
+    function matchQ(u) {
+      if (!q) return true;
+      var s = (u.name || '') + ' ' + (u.desc || '') + ' ' + (u.tag || '') + ' ' + (u.category || '');
+      return s.toLowerCase().indexOf(q) !== -1;
+    }
+
+    var list;
+    if (tab === 'all') {
+      list = upgradeSets.personal.concat(upgradeSets.shop).concat(upgradeSets.network);
+    } else if (tab === 'personal') {
+      list = upgradeSets.personal.slice();
+    } else if (tab === 'shop') {
+      list = upgradeSets.shop.slice();
+    } else {
+      list = upgradeSets.network.slice();
+    }
+
+        // Ensure category label exists for hover/perks
+    for (var ci = 0; ci < list.length; ci++) {
+      if (!list[ci].category) {
+        if (tab === 'personal') list[ci].category = 'personal';
+        else if (tab === 'shop') list[ci].category = 'shop';
+        else if (tab === 'network') list[ci].category = 'network';
+        else {
+          // all: infer by membership
+          if (upgradeSets.personal.indexOf(list[ci]) !== -1) list[ci].category = 'personal';
+          else if (upgradeSets.shop.indexOf(list[ci]) !== -1) list[ci].category = 'shop';
+          else list[ci].category = 'network';
+        }
+      }
+    }
+
+// Filter by search
+    var filtered = [];
+    for (var i = 0; i < list.length; i++) {
+      if (matchQ(list[i])) filtered.push(list[i]);
+    }
+
+    // Clear all panels then render only the active one (prevents weird overlap)
+    var panels = ['upgAll', 'upgPersonal', 'upgShop', 'upgNetwork'];
+    for (var p = 0; p < panels.length; p++) {
+      var el = $(panels[p]);
+      if (el) el.innerHTML = '';
+    }
+
+    var targetId = (tab === 'all') ? 'upgAll' : (tab === 'personal' ? 'upgPersonal' : (tab === 'shop' ? 'upgShop' : 'upgNetwork'));
+    renderUpgradesPanel(targetId, filtered);
+  }
+function renderTiers() {
     var c = state.contract;
     var unlocks = state.unlocks || {};
     var prog = state.progress || { tier1: 0, tier2: 0, tier3: 0 };
@@ -505,12 +764,40 @@
   }
 
 function renderAll() {
+    // Upgrade feedback (toast + sound + pulses)
+    try {
+      var curLv = (state.upgrades && state.upgrades.levels) ? state.upgrades.levels : null;
+      if (curLv) {
+        if (!lastUpgLevels) {
+          lastUpgLevels = JSON.parse(JSON.stringify(curLv));
+        } else {
+          for (var k in curLv) {
+            var a = parseInt(lastUpgLevels[k] || 0, 10) || 0;
+            var b = parseInt(curLv[k] || 0, 10) || 0;
+            if (b > a) {
+              // success!
+              playSuccessBlip();
+              toast('Upgrade applied', (String(k).replace(/_/g,' ') + ' is now level ' + b));
+              if (String(k) === 'heat_dampener') heatRipple();
+            }
+          }
+          lastUpgLevels = JSON.parse(JSON.stringify(curLv));
+        }
+      }
+    } catch(eU) {}
+
     renderContractPanel();
     renderTiers();
     renderLeaderboard();
     renderHistory();
     renderSystem();
     renderUpgrades();
+
+    // clear buying indicators
+    try {
+      var rows = document.querySelectorAll('.upgItem.buying');
+      for (var i = 0; i < rows.length; i++) rows[i].classList.remove('buying');
+    } catch(eC){}
   }
 
   function bind() {
@@ -568,6 +855,12 @@ function renderAll() {
       })(subBtns[s]);
     }
     setUpgTab(activeUpgTab);
+
+    var upgSearch = $('upgSearchInput');
+    if (upgSearch) {
+      upgSearch.oninput = function () { renderUpgrades(); };
+    }
+
 
     $('checkToggle').onclick = function () {
       var wrap = $('checkWrap');

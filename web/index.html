@@ -169,7 +169,7 @@
                 </div>
               </div>
 
-              <div class="tiers">
+              <div id="tiersWrap" class="tiers">
                 <div class="tierCard">
                   <div class="tierTop">
                     <div class="tierName">Tier 1</div>
@@ -203,7 +203,17 @@
                 <button id="specialBtn" class="btn gold">Special Contracts</button>
                 <div class="specialHint" id="specialHint">Requires REP: --</div>
               </div>
-            </section>
+            
+              <div id="rightChecklistWrap" class="rightChecklistWrap hidden">
+                <div class="cardHead mini">
+                  <div>
+                    <div class="cardTitle">Checklist</div>
+                    <div class="cardSub">Complete required steps to finish the job.</div>
+                  </div>
+                </div>
+                <div id="rightChecklist" class="checklist checklistRight"></div>
+              </div>
+</section>
           </div>
         </section>
 
@@ -220,16 +230,22 @@
               <div class="luxHeader">
                 <div class="luxBadge">BLACK MARKET</div>
                 <div class="luxHint" id="upgMsg">Build your operator. Upgrade your shop. Grow your network.</div>
+                <div class="luxTotals" id="upgTotals">Time x1.00 • Payout x1.00 • Alert x1.00 • Radius x1.00 • Final x1.00</div>
               </div>
 
               <div class="subTabs" role="tablist" aria-label="Upgrade categories">
-                <button class="subTab active" data-subtab="personal">Personal</button>
+                <button class="subTab active" data-subtab="all">All</button>
+                <button class="subTab" data-subtab="personal">Personal</button>
                 <button class="subTab" data-subtab="shop">Shop</button>
-                <button class="subTab" data-subtab="network">Network</button>
+                <button class="subTab" data-subtab="network">Network</button></div>
+
+              <div class="upgSearch">
+                <input id="upgSearchInput" type="text" placeholder="Search upgrades..." autocomplete="off" />
               </div>
 
               <div class="upgPanels">
-                <div id="upgPersonal" class="upgList upgPanel active" data-panel="personal"></div>
+                <div id="upgAll" class="upgList upgPanel active" data-panel="all"></div>
+                <div id="upgPersonal" class="upgList upgPanel" data-panel="personal"></div>
                 <div id="upgShop" class="upgList upgPanel" data-panel="shop"></div>
                 <div id="upgNetwork" class="upgList upgPanel" data-panel="network"></div>
               </div>
@@ -241,14 +257,7 @@
                   <div class="cardSub">What these upgrades are meant to power.</div>
                 </div>
               </div>
-              <div class="notes">
-                <div class="note"><b>Chop Speed</b> reduces action time across steps.</div>
-                <div class="note"><b>Clean Payout</b> boosts final cash payout.</div>
-                <div class="note"><b>Heat Dampener</b> lowers the chance of police attention.</div>
-                <div class="note"><b>Scanner</b> tightens search radius on higher tiers.</div>
-                <div class="note"><b>Auto Dispatch</b> streamlines final disposal.</div>
-                <div class="note">Implementation hook is ready. Server-side economy wiring is next.</div>
-              </div>
+              <div class="notes" id="upgPerks"></div>
             </section>
           </div>
         </section>
@@ -343,5 +352,7 @@
     </div>
 
     <script src="app.js"></script>
-  </body>
+    <div id="toastHost" class="toastHost"></div>
+  <div id="heatRipple" class="heatRipple"></div>
+</body>
 </html>

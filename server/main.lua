@@ -566,7 +566,28 @@ getUpgradeInfo = function(cid)
       net_forgery = (cfg.net_forgery and cfg.net_forgery.maxLevel) or 0,
       net_parts = (cfg.net_parts and cfg.net_parts.maxLevel) or 0,
     },
-    mult = {
+        defs = {
+      chop_speed = { stat = 'time', mode = 'reduce', per = (cfg.chop_speed and cfg.chop_speed.timeReducePerLevel) or 0, min = (cfg.chop_speed and cfg.chop_speed.minTimeMult) or 0.55 },
+      tech_hand = { stat = 'time', mode = 'reduce', per = (cfg.tech_hand and cfg.tech_hand.timeReducePerLevel) or 0, min = (cfg.tech_hand and cfg.tech_hand.minTimeMult) or 0.55 },
+      shop_lift = { stat = 'time', mode = 'reduce', per = (cfg.shop_lift and cfg.shop_lift.timeReducePerLevel) or 0, min = (cfg.shop_lift and cfg.shop_lift.minTimeMult) or 0.55 },
+
+      clean_payout = { stat = 'payout', mode = 'bonus', per = (cfg.clean_payout and cfg.clean_payout.payoutBonusPerLevel) or 0, max = (cfg.clean_payout and cfg.clean_payout.maxPayoutMult) or 3.0 },
+      broker_cut = { stat = 'payout', mode = 'bonus', per = (cfg.broker_cut and cfg.broker_cut.payoutBonusPerLevel) or 0, max = (cfg.broker_cut and cfg.broker_cut.maxPayoutMult) or 3.0 },
+      shop_compactor = { stat = 'payout', mode = 'bonus', per = (cfg.shop_compactor and cfg.shop_compactor.payoutBonusPerLevel) or 0, max = (cfg.shop_compactor and cfg.shop_compactor.maxPayoutMult) or 3.0 },
+      net_fence = { stat = 'payout', mode = 'bonus', per = (cfg.net_fence and cfg.net_fence.payoutBonusPerLevel) or 0, max = (cfg.net_fence and cfg.net_fence.maxPayoutMult) or 3.0 },
+      net_forgery = { stat = 'payout', mode = 'bonus', per = (cfg.net_forgery and cfg.net_forgery.payoutBonusPerLevel) or 0, max = (cfg.net_forgery and cfg.net_forgery.maxPayoutMult) or 3.0 },
+      net_parts = { stat = 'payout', mode = 'bonus', per = (cfg.net_parts and cfg.net_parts.payoutBonusPerLevel) or 0, max = (cfg.net_parts and cfg.net_parts.maxPayoutMult) or 3.0 },
+
+      heat_dampener = { stat = 'alert', mode = 'reduce', per = (cfg.heat_dampener and cfg.heat_dampener.alertReducePerLevel) or 0, min = (cfg.heat_dampener and cfg.heat_dampener.minAlertMult) or 0.35 },
+      shop_dampening = { stat = 'alert', mode = 'reduce', per = (cfg.shop_dampening and cfg.shop_dampening.alertReducePerLevel) or 0, min = (cfg.shop_dampening and cfg.shop_dampening.minAlertMult) or 0.35 },
+
+      scanner = { stat = 'radius', mode = 'reduce', per = (cfg.scanner and cfg.scanner.radiusReducePerLevel) or 0, min = (cfg.scanner and cfg.scanner.minRadiusMult) or 0.55 },
+      runner_instinct = { stat = 'radius', mode = 'reduce', per = (cfg.runner_instinct and cfg.runner_instinct.radiusReducePerLevel) or 0, min = (cfg.runner_instinct and cfg.runner_instinct.minRadiusMult) or 0.55 },
+
+      auto_dispatch = { stat = 'final', mode = 'reduce', per = (cfg.auto_dispatch and cfg.auto_dispatch.finalReducePerLevel) or 0, min = (cfg.auto_dispatch and cfg.auto_dispatch.minFinalMult) or 0.55 },
+      shop_shredder = { stat = 'final', mode = 'reduce', per = (cfg.shop_shredder and cfg.shop_shredder.finalReducePerLevel) or 0, min = (cfg.shop_shredder and cfg.shop_shredder.minFinalMult) or 0.45 },
+    },
+mult = {
       time = timeMult,
       payout = payoutMult,
       alert = alertMult,
