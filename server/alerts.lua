@@ -1,5 +1,5 @@
 Alerts = {
-  last = {},
+  last = {}, -- src -> os.time()
 }
 
 local function canAlert(src)
@@ -7,6 +7,7 @@ local function canAlert(src)
   return (os.time() - last) >= (Config.PDAlert.cooldownSeconds or 60)
 end
 
+-- Returns true if an alert was actually fired (useful for bonus objectives)
 function Alerts.Try(src, tierKey, coords, plate, model, chanceMult)
   if not Config.PDAlert.enabled then return false end
   if not canAlert(src) then return false end
@@ -20,6 +21,7 @@ function Alerts.Try(src, tierKey, coords, plate, model, chanceMult)
 
   Alerts.last[src] = os.time()
 
+  -- Dispatch stub (swap to ps-dispatch/qb-dispatch later)
   TriggerEvent('gs-chopshop:pdAlert', {
     coords = coords,
     plate = plate,
@@ -31,6 +33,7 @@ function Alerts.Try(src, tierKey, coords, plate, model, chanceMult)
   return true
 end
 
+-- Default handler (prints). Replace with your dispatch integration.
 AddEventHandler('gs-chopshop:pdAlert', function(data)
   print(("^1[gs-chopshop]^0 PD ALERT: %s @ (%.2f, %.2f, %.2f)"):format(
     data.message,

@@ -33,7 +33,7 @@ Config.SpecialContracts = {
 -- CO-OP (invite a partner for a split)
 --========================================
 Config.Coop = {
-  enabled = true,
+  enabled = false,
   partnerShare = 0.35,      -- % of leader cash payout given to partner
   partnerRepShare = 1.0,    -- multiplier on partner rep (1.0 = same rep as leader)
 }
@@ -45,7 +45,7 @@ Config.Coop = {
 -- If you want classic/static contracts, set enabled=false.
 Config.ContractModifiers = {
   enabled = true,
-  -- Keep at least 1 active by default
+  -- Keep at least 1 active by default so players can *see* and feel the system.
   minActive = 1,
   maxActive = 2,
 
@@ -94,7 +94,7 @@ Config.ContractModifiers = {
   }
 }
 
--- Search zone settings
+-- Search zone settings (ONE definition only)
 Config.Search = {
   radius = 180.0, -- meters
   blipColor = 1,
@@ -110,7 +110,7 @@ Config.V2 = {
   useConverterFinale = false,
 }
 
--- Friendly alias
+-- Friendly alias (same table as V2)
 Config.RealismSteps = Config.V2
 
 Config.PDAlert = {
@@ -119,7 +119,7 @@ Config.PDAlert = {
   onArrival = false,    -- alert chance when arriving to chop bay
   chance = { tier1 = 15, tier2 = 25, tier3 = 40 }, -- %
   cooldownSeconds = 60,
-  dispatch = "custom", 
+  dispatch = "custom",  -- "custom" for now (event stub), you can swap later
 }
 
 Config.Tiers = {
@@ -202,7 +202,7 @@ Config.AdvancedSteps = {
 }
 
 --========================================
--- ADVANCED FEATURES
+-- V3 ADVANCED FEATURES (NO HEAT SYSTEM)
 --========================================
 Config.V3 = {
   enableMoveCutCrush = true,
@@ -246,7 +246,7 @@ Config.ShellPipeline = Config.V3
 
 
 --========================================
--- USER-FRIENDLY GUIDES / MARKERS
+-- V4 USER-FRIENDLY GUIDES / MARKERS
 --========================================
 Config.V4 = {
   guides = {
@@ -273,135 +273,241 @@ Config.Debug = {
 }
 
 --========================================
--- UPGRADES
+-- LUXURY UPGRADES (OPTION C)
 --========================================
+
 Config.Upgrades = {
+  -- Which account to charge for upgrades.
   priceAccount = 'cash',
+
+  -- Price scaling per level (basePrice * priceMult^(currentLevel))
   priceMult = 1.22,
 
-  chop_speed = {
-    label = 'Chop Speed',
-    basePrice = 25000,
-    maxLevel = 10,
-    timeReducePerLevel = 0.05,
+  --[[ 
+    Upgrade definitions:
+      label, desc, tag, category: UI fields
+      basePrice, maxLevel: economy fields
+      Effect fields:
+        timeReducePerLevel, minTimeMult
+        payoutBonusPerLevel, maxPayoutMult
+        alertReducePerLevel, minAlertMult
+        radiusReducePerLevel, minRadiusMult
+        finalReducePerLevel, minFinalMult
+        specialWeightBonusPerLevel (optional: syndicate/special weighting)
+  ]]
+
+  -- Personal (Operator)
+  tech_hands = {
+    label = 'Technician Hands',
+    desc  = 'Quicker work on dismantle actions.',
+    tag   = 'Personal',
+    category = 'personal',
+    basePrice = 18000,
+    maxLevel = 15,
+    timeReducePerLevel = 0.03,
     minTimeMult = 0.55,
   },
 
-  clean_payout = {
-    label = 'Clean Payout',
-    basePrice = 40000,
+  runner_instinct = {
+    label = 'Runner Instinct',
+    desc  = 'Better search intel and faster lock-on.',
+    tag   = 'Personal',
+    category = 'personal',
+    basePrice = 24000,
     maxLevel = 10,
-    payoutBonusPerLevel = 0.10,
-    maxPayoutMult = 3.0,
+    radiusReducePerLevel = 0.06,
+    minRadiusMult = 0.55,
   },
 
-  heat_dampener = {
-    label = 'Heat Dampener',
-    basePrice = 60000,
-    maxLevel = 10,
-    alertReducePerLevel = 0.08,
-    minAlertMult = 0.35,
+  broker_cut = {
+    label = 'Broker Cut',
+    desc  = 'Cleaner deals, better money per run.',
+    tag   = 'Personal',
+    category = 'personal',
+    basePrice = 32000,
+    maxLevel = 15,
+    payoutBonusPerLevel = 0.06,
+    maxPayoutMult = 2.50,
   },
 
   scanner = {
     label = 'Scanner Suite',
+    desc  = 'Tightens the search radius on higher tiers.',
+    tag   = 'Personal',
+    category = 'personal',
     basePrice = 85000,
     maxLevel = 5,
     radiusReducePerLevel = 0.10,
     minRadiusMult = 0.55,
   },
 
+  -- Shop (Facility)
+  hydraulic_lift = {
+    label = 'Hydraulic Lift',
+    desc  = 'Faster positioning and access to parts.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 50000,
+    maxLevel = 10,
+    timeReducePerLevel = 0.04,
+    minTimeMult = 0.55,
+  },
+
+  chop_speed = {
+    label = 'Chop Speed',
+    desc  = 'Reduces action time across steps.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 25000,
+    maxLevel = 10,
+    timeReducePerLevel = 0.05,
+    minTimeMult = 0.55,
+  },
+
+  sound_dampening = {
+    label = 'Sound Dampening',
+    desc  = 'Lower attention during the job.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 55000,
+    maxLevel = 10,
+    alertReducePerLevel = 0.06,
+    minAlertMult = 0.35,
+  },
+
+  heat_dampener = {
+    label = 'Heat Dampener',
+    desc  = 'Lowers the chance of police attention.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 60000,
+    maxLevel = 10,
+    alertReducePerLevel = 0.08,
+    minAlertMult = 0.35,
+  },
+
+  scrap_compactor = {
+    label = 'Scrap Compactor',
+    desc  = 'More value from the same metal.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 70000,
+    maxLevel = 10,
+    payoutBonusPerLevel = 0.05,
+    maxPayoutMult = 2.75,
+  },
+
+  shell_shredder = {
+    label = 'Shell Shredder',
+    desc  = 'Streamlines final disposal.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 110000,
+    maxLevel = 8,
+    finalReducePerLevel = 0.08,
+    minFinalMult = 0.55,
+  },
+
   auto_dispatch = {
     label = 'Auto Dispatch',
+    desc  = 'Streamlines final disposal.',
+    tag   = 'Shop',
+    category = 'shop',
     basePrice = 120000,
     maxLevel = 5,
     finalReducePerLevel = 0.10,
     minFinalMult = 0.55,
   },
 
-  -- Personal Upgrades (Operator)
-  tech_hand = {
-    label = 'Technician Hands',
-    basePrice = 15000,
-    maxLevel = 15,
-    timeReducePerLevel = 0.02, -- stacks with chop_speed/shop_lift
-    minTimeMult = 0.55,
-  },
-
-  runner_instinct = {
-    label = 'Runner Instinct',
-    basePrice = 20000,
+  clean_payout = {
+    label = 'Clean Payout',
+    desc  = 'Boosts final cash payout.',
+    tag   = 'Shop',
+    category = 'shop',
+    basePrice = 40000,
     maxLevel = 10,
-    radiusReducePerLevel = 0.05, -- stacks with scanner
-    minRadiusMult = 0.50,
+    payoutBonusPerLevel = 0.10,
+    maxPayoutMult = 3.0,
   },
 
-  broker_cut = {
-    label = 'Broker Cut',
-    basePrice = 30000,
-    maxLevel = 10,
-    payoutBonusPerLevel = 0.06, -- stacks with clean_payout/net_fence
-    maxPayoutMult = 3.5,
-  },
-
-  -- Shop Upgrades (Facility)
-  shop_lift = {
-    label = 'Hydraulic Lift',
-    basePrice = 35000,
-    maxLevel = 10,
-    timeReducePerLevel = 0.03,
-    minTimeMult = 0.55,
-  },
-
-  shop_dampening = {
-    label = 'Sound Dampening',
-    basePrice = 45000,
-    maxLevel = 10,
-    alertReducePerLevel = 0.05, -- stacks with heat_dampener
-    minAlertMult = 0.30,
-  },
-
-  shop_compactor = {
-    label = 'Scrap Compactor',
-    basePrice = 55000,
-    maxLevel = 10,
-    payoutBonusPerLevel = 0.04,
-    maxPayoutMult = 3.5,
-  },
-
-  shop_shredder = {
-    label = 'Shell Shredder',
-    basePrice = 70000,
-    maxLevel = 8,
-    finalReducePerLevel = 0.06, -- stacks with auto_dispatch
-    minFinalMult = 0.45,
-  },
-
-  -- Network Upgrades (Syndicate)
-  net_fence = {
+  -- Network (Syndicate)
+  fence_connections = {
     label = 'Fence Connections',
-    basePrice = 60000,
-    maxLevel = 10,
-    payoutBonusPerLevel = 0.05,
-    maxPayoutMult = 3.5,
-  },
-
-  net_forgery = {
-    label = 'Forgery Lab',
+    desc  = 'Better buyers and better prices.',
+    tag   = 'Network',
+    category = 'network',
     basePrice = 90000,
-    maxLevel = 6,
-    payoutBonusPerLevel = 0.07,
-    maxPayoutMult = 3.5,
-  },
-
-  net_parts = {
-    label = 'Parts Market',
-    basePrice = 50000,
     maxLevel = 10,
-    payoutBonusPerLevel = 0.03,
-    maxPayoutMult = 3.5,
+    payoutBonusPerLevel = 0.07,
+    maxPayoutMult = 3.0,
   },
 
+  parts_market = {
+    label = 'Parts Market',
+    desc  = 'Demand spikes, payouts climb.',
+    tag   = 'Network',
+    category = 'network',
+    basePrice = 65000,
+    maxLevel = 15,
+    payoutBonusPerLevel = 0.04,
+    maxPayoutMult = 3.0,
+  },
+
+  forgery_lab = {
+    label = 'Forgery Lab',
+    desc  = 'Improves special contract access.',
+    tag   = 'Network',
+    category = 'network',
+    basePrice = 150000,
+    maxLevel = 10,
+    specialWeightBonusPerLevel = 0.05,
+  },
+}
+
+-- Specialization Roles (Co-op)
+Config.Roles = {
+  enabled = false,
+  -- Base multipliers applied on top of upgrades (no heat required).
+  defs = {
+    tech = {
+      label = 'Tech',
+      desc  = 'Faster dismantle actions and assist boosts.',
+      mult = { time = 0.96, final = 0.98 },
+    },
+    runner = {
+      label = 'Runner',
+      desc  = 'Better search intel and mobility.',
+      mult = { radius = 0.94, time = 0.99 },
+    },
+    broker = {
+      label = 'Broker',
+      desc  = 'Better payouts and contract quality.',
+      mult = { payout = 1.06, alert = 0.98 },
+    },
+  },
+  -- Crew synergy bonuses (applied when a co-op partner exists).
+  synergies = {
+    tech_tech = { label = 'Assembly Line', mult = { time = 0.95 } },
+    tech_runner = { label = 'Pit Crew', mult = { time = 0.97, final = 0.95 } },
+    runner_broker = { label = 'Clean Route', mult = { radius = 0.97, payout = 1.04 } },
+    full_house = { label = 'Syndicate Efficiency', mult = { time = 0.96, payout = 1.03 } },
+  }
+}
+
+-- Syndicate progression (Empire layer)
+Config.Syndicate = {
+  enabled = true,
+  -- Influence gained per successful contract (base + tier bonus)
+  influenceBase = 5,
+  influenceByTier = { tier1 = 3, tier2 = 5, tier3 = 8 },
+  -- Influence required per level
+  influencePerLevel = 100,
+
+  -- Passive bonus per syndicate level (small, keep it fair)
+  perLevel = {
+    payout = 0.005, -- +0.5% per level
+    time = 0.002,   -- -0.2% per level
+  }
 }
 
 --[[
@@ -453,3 +559,293 @@ Config.BonusObjectives = {
 
 -- Base reputation gain per successful contract (in addition to bonus objective rep)
 Config.Reputation = Config.Reputation or { basePerChop = 1 }
+
+
+-- Syndicate Influence Shop (shared perks)
+Config.SyndicatePerks = {
+  vaultBoost = {
+    label = 'Vault Interest',
+    desc = 'Adds +1% vault interest per level (paid daily).',
+    baseCost = 250,
+    growth = 0.35,
+    maxLevel = 10,
+  },
+  payoutMult = {
+    label = 'Syndicate Cut',
+    desc = '+2% payout per level for all members.',
+    baseCost = 400,
+    growth = 0.35,
+    maxLevel = 10,
+  },
+  timeMult = {
+    label = 'Clockwork Crew',
+    desc = '-2% contract time per level for all members.',
+    baseCost = 400,
+    growth = 0.35,
+    maxLevel = 10,
+  },
+  radiusMult = {
+    label = 'Street Eyes',
+    desc = '-3% search radius per level for all members.',
+    baseCost = 350,
+    growth = 0.35,
+    maxLevel = 10,
+  },
+}
+
+
+--==============================
+-- Syndicate Empire Layer (Expanded)
+--==============================
+
+-- Rank permissions (configurable). Ranks are numeric: 1=member, 2=capo, 3=boss.
+Config.SyndicatePermissions = {
+  member = {
+    invite = false,
+    withdraw = false,
+    purchase = false,
+    ops = false,
+    branding = false,
+    promote = false,
+    kick = false,
+    disband = false,
+    routing = false,
+  },
+  capo = {
+    invite = true,
+    withdraw = true,
+    purchase = true,
+    ops = true,
+    branding = false,
+    promote = false,
+    kick = true,
+    disband = false,
+    routing = true,
+  },
+  boss = {
+    invite = true,
+    withdraw = true,
+    purchase = true,
+    ops = true,
+    branding = true,
+    promote = true,
+    kick = true,
+    disband = true,
+    routing = true,
+  }
+}
+
+-- Auto revenue routing (from contract payouts into Syndicate Bank)
+Config.SyndicateRevenueRouting = {
+  enabledByDefault = false,
+  defaultPercent = 0.15, -- 15%
+  minPercent = 0.00,
+  maxPercent = 0.35, -- keep it fair
+}
+
+-- Syndicate upgrade tree (funds + influence + level requirement)
+-- Costs are paid from:
+--   funds: Syndicate Vault
+--   influence: Syndicate Influence
+-- Requirements:
+--   minLevel: syndicate level required to buy next level
+--   requires: { nodeId = levelRequired }
+Config.SyndicateTree = {
+  nodes = {
+    -- FINANCE
+    routing_efficiency = {
+      label = 'Routing Efficiency',
+      desc  = 'Increases max routing percent cap.',
+      branch = 'Finance',
+      maxLevel = 5,
+      cost = { funds = 15000, influence = 120, growth = 0.35 },
+      minLevel = 0,
+      effect = { routingCapAdd = 0.02 }, -- +2% max cap per level
+    },
+    vault_interest = {
+      label = 'Vault Interest',
+      desc  = 'Daily interest on vault balance (server-side payout).',
+      branch = 'Finance',
+      maxLevel = 10,
+      cost = { funds = 25000, influence = 150, growth = 0.35 },
+      minLevel = 2,
+      effect = { vaultInterest = 0.01 }, -- +1% per level
+    },
+    syndicate_cut = {
+      label = 'Syndicate Cut',
+      desc  = 'All members earn more per contract.',
+      branch = 'Finance',
+      maxLevel = 10,
+      cost = { funds = 30000, influence = 200, growth = 0.40 },
+      minLevel = 1,
+      effect = { payoutMult = 0.02 }, -- +2% per level
+    },
+
+    -- CONTRACTS
+    black_market_contacts = {
+      label = 'Black Market Contacts',
+      desc  = 'Higher chance for rare contract rolls.',
+      branch = 'Contracts',
+      maxLevel = 8,
+      cost = { funds = 45000, influence = 240, growth = 0.38 },
+      minLevel = 3,
+      effect = { rareRoll = 0.04 }, -- +4% weighting per level (server-side)
+    },
+    clean_pipeline = {
+      label = 'Clean Pipeline',
+      desc  = 'Slightly shorter contract duration for all members.',
+      branch = 'Contracts',
+      maxLevel = 10,
+      cost = { funds = 35000, influence = 200, growth = 0.35 },
+      minLevel = 2,
+      effect = { timeMult = -0.02 }, -- -2% per level
+    },
+
+    -- OPERATIONS
+    ops_department = {
+      label = 'Operations Department',
+      desc  = 'Unlocks syndicate-wide operations.',
+      branch = 'Operations',
+      maxLevel = 1,
+      cost = { funds = 80000, influence = 400, growth = 0.0 },
+      minLevel = 4,
+      effect = { unlockOps = true },
+    },
+    ops_cooldown = {
+      label = 'Operational Tempo',
+      desc  = 'Reduces operation cooldowns.',
+      branch = 'Operations',
+      maxLevel = 5,
+      cost = { funds = 65000, influence = 280, growth = 0.32 },
+      minLevel = 5,
+      requires = { ops_department = 1 },
+      effect = { opCooldownMult = -0.08 }, -- -8% per level
+    },
+    ops_strength = {
+      label = 'Force Multiplier',
+      desc  = 'Stronger operation bonuses.',
+      branch = 'Operations',
+      maxLevel = 5,
+      cost = { funds = 65000, influence = 280, growth = 0.32 },
+      minLevel = 5,
+      requires = { ops_department = 1 },
+      effect = { opStrengthMult = 0.10 }, -- +10% per level
+    },
+  }
+}
+
+-- Syndicate Operations (syndicate-wide timed buffs)
+Config.SyndicateOperations = {
+  enabled = true,
+  defs = {
+    parts_distribution = {
+      label = 'Parts Distribution',
+      desc  = 'Boosts payout for a short window.',
+      durationMinutes = 30,
+      cooldownMinutes = 60,
+      cost = { funds = 50000, influence = 150, minLevel = 4 },
+      mult = { payout = 0.15 }, -- +15%
+    },
+    black_market_push = {
+      label = 'Black Market Push',
+      desc  = 'Improves rare contract odds temporarily.',
+      durationMinutes = 60,
+      cooldownMinutes = 120,
+      cost = { funds = 70000, influence = 250, minLevel = 6 },
+      mult = { rareRoll = 0.20 }, -- +20% rare weighting
+    },
+    supply_run = {
+      label = 'Supply Run',
+      desc  = 'Reduces personal upgrade prices briefly.',
+      durationMinutes = 30,
+      cooldownMinutes = 90,
+      cost = { funds = 45000, influence = 140, minLevel = 5 },
+      mult = { upgradePrice = -0.10 }, -- -10%
+    },
+  }
+}
+
+--=====================================================
+-- Syndicate Prestige Ladder (slow, competitive)
+-- Funds + Influence + Level requirement (your balance pick)
+--=====================================================
+Config.SyndicatePrestige = {
+  -- Tiers are keyed by the *resulting* prestige.
+  -- Example: tiers[1] requirements to go from 0 -> 1.
+  tiers = {
+    [1] = { levelReq = 6,  fundsCost = 150000, influenceCost = 300 },
+    [2] = { levelReq = 9,  fundsCost = 350000, influenceCost = 650 },
+    [3] = { levelReq = 12, fundsCost = 800000, influenceCost = 1200 },
+    [4] = { levelReq = 15, fundsCost = 1600000, influenceCost = 2200 },
+    [5] = { levelReq = 18, fundsCost = 3200000, influenceCost = 4000 },
+  }
+}
+
+--=====================================================
+-- Black Market War (Prestige III+) - rotating contract pool
+--=====================================================
+Config.BlackMarketWar = {
+  enabled = true,
+
+  -- Access gate
+  minPrestige = 3,
+
+  -- Event timing (admin starts via server console command `gs_bm_start`)
+  durationSeconds = 90 * 60,   -- 90 minutes
+  rotationSeconds = 20 * 60,   -- refresh offers every 20 minutes
+
+  -- Contract duration is slightly tighter than normal (multiplies base duration)
+  durationMult = 0.80,
+
+  -- A slice of BM points becomes prestige points (slow burn)
+  prestigePointRate = 0.10,
+
+  themes = {
+    'BLACK MARKET',
+    'GHOST AUCTION',
+    'SILK ROAD REBORN',
+    'THE NIGHT SHIFT',
+    'THE BROKER WAR',
+  },
+
+  pool = {
+    standard = 2,
+    elite = 1,
+    dynasty = 1,
+  },
+
+  tiers = {
+    standard = {
+      label = 'Standard Offer',
+      desc  = 'Solid payout, hard rules. Score points for your group.',
+      minMods = 2, maxMods = 3,
+      payoutMult = 1.20,
+      pointsBase = 90,
+      pointsPerfect = 45,
+      pointsBonusObj = 20,
+      pointsStackPenalty = 0.35,
+    },
+    elite = {
+      label = 'Elite Offer',
+      desc  = 'High payout. More modifiers. Bigger points.',
+      minMods = 3, maxMods = 4,
+      payoutMult = 1.40,
+      pointsBase = 140,
+      pointsPerfect = 70,
+      pointsBonusObj = 35,
+      pointsStackPenalty = 0.30,
+    },
+    dynasty = {
+      label = 'Dynasty Offer',
+      desc  = 'The crown. Short fuse. Heavy modifiers. Massive points.',
+      minMods = 4, maxMods = 5,
+      payoutMult = 1.65,
+      pointsBase = 220,
+      pointsPerfect = 120,
+      pointsBonusObj = 60,
+      pointsStackPenalty = 0.25,
+    }
+  }
+}
+
+

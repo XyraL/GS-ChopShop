@@ -1,20 +1,151 @@
-local ActiveContracts = {}
-local ActiveSessions  = {}
+local ActiveContracts = {} -- [src] = contract
+local ActiveSessions  = {} -- [src] = { netId, bayIndex, done = { [stepKey]=true } }
 
-local Coop = {
-  leaderToPartner = {},
-  partnerToLeader = {},
-  pending = {},
-}
+-- Co-op removed. Use Syndicates.
 
+-- IMPORTANT:
+-- ChopShop DB rows are keyed by QBCore/QBox citizenid (values like "D3ZJ9ESN").
+-- Previous builds tried to "auto-resolve" citizenid vs license, which can cause
+-- reads to miss rows even though writes succeeded. We hard-lock everything to citizenid
+-- so reads always match writes.
 local function resolveDbId(_, player)
   local cid = player and FW.GetCid(player) or nil
   return cid, cid, nil, nil
 end
 
-local Cooldowns       = {}
+local function getSourceByCid(cid)
+  if not cid then return nil end
+  for _, sid in ipairs(GetPlayers()) do
+    local p = FW.GetPlayer(tonumber(sid))
+    if p and FW.GetCid(p) == cid then
+      return tonumber(sid)
+    end
+  end
+  return nil
+end
+
+local Cooldowns       = {} -- [src] = os.time()
 
 local function now() return os.time() end
+
+--==============================
+-- Syndicate helpers (permissions, settings, buffs)
+--==============================
+local function rankKey(rank)
+  rank = tonumber(rank or 1) or 1
+  if rank >= 3 then return 'boss' end
+  if rank == 2 then return 'capo' end
+  return 'member'
+end
+
+local function hasSyndPerm(synd, perm)
+  if not synd or not synd.id or synd.id <= 0 then return false end
+  local key = rankKey(synd.rank)
+  local perms = Config.SyndicatePermissions or {}
+  local t = perms[key] or {}
+  return t[perm] == true
+end
+
+local function getSyndicateContextByCid(cid)
+  if not (DB and DB.GetPlayerSyndicate) then return nil end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or (s.id or 0) <= 0 then return nil end
+  local settings = (DB and DB.GetSyndicateSettings) and DB.GetSyndicateSettings(s.id) or { routingEnabled=false, routingPercent=0.15, branding={} }
+  local perks = (DB and DB.GetSyndicatePerks) and DB.GetSyndicatePerks(s.id) or {}
+  local stats = (DB and DB.GetSyndicateStatsAgg) and DB.GetSyndicateStatsAgg(s.id) or {}
+  local op = (DB and DB.GetSyndicateOp) and DB.GetSyndicateOp(s.id) or { opId=nil, activeUntil=0, cooldownUntil=0, meta={} }
+  return { synd = s, settings = settings, perks = perks, stats = stats, op = op }
+end
+
+local function computeSyndicateBuffs(ctx)
+  ctx = ctx or {}
+  local perks = ctx.perks or {}
+  local op = ctx.op or {}
+  local tree = (Config.SyndicateTree and Config.SyndicateTree.nodes) or {}
+  local mult = {
+    payout = 1.0,
+    time = 1.0,
+    rareRoll = 0.0,
+    routingCapAdd = 0.0,
+    vaultInterest = 0.0,
+    opCooldownMult = 1.0,
+    opStrengthMult = 1.0,
+    upgradePriceMult = 1.0,
+    opsUnlocked = false,
+  }
+
+  -- Interpret tree effects from perk levels (stored in perks table)
+  for nodeId, lvl in pairs(perks) do
+    local n = tree[nodeId]
+    lvl = tonumber(lvl or 0) or 0
+    if n and lvl > 0 and n.effect then
+      if n.effect.payoutMult then mult.payout = mult.payout * (1.0 + (n.effect.payoutMult * lvl)) end
+      if n.effect.timeMult then mult.time = mult.time * (1.0 + (n.effect.timeMult * lvl)) end
+      if n.effect.rareRoll then mult.rareRoll = mult.rareRoll + (n.effect.rareRoll * lvl) end
+      if n.effect.routingCapAdd then mult.routingCapAdd = mult.routingCapAdd + (n.effect.routingCapAdd * lvl) end
+      if n.effect.vaultInterest then mult.vaultInterest = mult.vaultInterest + (n.effect.vaultInterest * lvl) end
+      if n.effect.opCooldownMult then mult.opCooldownMult = mult.opCooldownMult * (1.0 + (n.effect.opCooldownMult * lvl)) end
+      if n.effect.opStrengthMult then mult.opStrengthMult = mult.opStrengthMult * (1.0 + (n.effect.opStrengthMult * lvl)) end
+      if n.effect.unlockOps then mult.opsUnlocked = true end
+    end
+  end
+
+  -- Active operation buffs
+  local nowt = now()
+  if op and op.opId and (tonumber(op.activeUntil or 0) or 0) > nowt then
+    local defs = (Config.SyndicateOperations and Config.SyndicateOperations.defs) or {}
+    local d = defs[op.opId]
+    if d and d.mult then
+      local strength = mult.opStrengthMult or 1.0
+      if d.mult.payout then mult.payout = mult.payout * (1.0 + (tonumber(d.mult.payout) or 0) * strength) end
+      if d.mult.rareRoll then mult.rareRoll = mult.rareRoll + (tonumber(d.mult.rareRoll) or 0) * strength end
+      if d.mult.upgradePrice then mult.upgradePriceMult = mult.upgradePriceMult * (1.0 + (tonumber(d.mult.upgradePrice) or 0) * strength) end
+    end
+  end
+
+  return mult
+end
+
+local function payCashWithRouting(src, player, amount, ctx, reason)
+  amount = math.floor(tonumber(amount or 0) or 0)
+  if amount <= 0 then return 0, 0 end
+  if not player then return 0, 0 end
+
+  if not ctx or not ctx.synd or (ctx.synd.id or 0) <= 0 then
+    FW.AddMoney(player, 'cash', amount)
+    return amount, 0
+  end
+
+  local settings = ctx.settings or { routingEnabled=false, routingPercent=0.15 }
+  local routeOn = settings.routingEnabled == true
+  local pct = tonumber(settings.routingPercent or 0.0) or 0.0
+
+  local capBase = (Config.SyndicateRevenueRouting and tonumber(Config.SyndicateRevenueRouting.maxPercent or 0.35)) or 0.35
+  local buffs = computeSyndicateBuffs(ctx)
+  local cap = math.max(0.0, math.min(0.95, capBase + (buffs.routingCapAdd or 0.0)))
+  local minP = (Config.SyndicateRevenueRouting and tonumber(Config.SyndicateRevenueRouting.minPercent or 0.0)) or 0.0
+  pct = math.max(minP, math.min(cap, pct))
+
+  if not routeOn or pct <= 0.0001 or not (DB and DB.DepositToVault) then
+    FW.AddMoney(player, 'cash', amount)
+    return amount, 0
+  end
+
+  local routed = math.floor(amount * pct)
+  local take = math.max(0, math.min(amount, routed))
+  local keep = amount - take
+
+  if keep > 0 then FW.AddMoney(player, 'cash', keep) end
+  if take > 0 then
+    DB.DepositToVault(ctx.synd.id, FW.GetCid(player), take)
+    if DB.AddVaultTx then
+      DB.AddVaultTx(ctx.synd.id, FW.GetCid(player), take, 'route', reason or 'CONTRACT', { pct = pct })
+    end
+  end
+
+  return keep, take
+end
+
 
 local function trimPlate(p)
   return (p or ''):gsub('%s+', '')
@@ -59,6 +190,7 @@ end
 
 local NON_FINAL = nonFinalSteps()
 
+-- Step order index (for sorting requiredList consistently)
 local STEP_INDEX = {}
 do
   local i = 0
@@ -77,10 +209,14 @@ local function stepEnabledServer(stepKey)
   return true
 end
 
+-- NOTE: GetEntityBoneIndexByName is not available server-side.
+-- For V2, the client computes which steps apply to the specific vehicle (based on bones/doors)
+-- and sends that list to the server when beginning the chop.
 local function computeRequiredStepsFromClient(requiredList)
   local requiredSet = {}
   local cleanList = {}
 
+  -- Build a whitelist set of valid non-final keys
   local valid = {}
   for _, k in ipairs(NON_FINAL) do
     if stepEnabledServer(k) then
@@ -98,6 +234,7 @@ local function computeRequiredStepsFromClient(requiredList)
     end
   end
 
+  -- Fallback: if client didn't send anything usable, require all enabled non-final steps
   if #cleanList == 0 then
     for _, k in ipairs(NON_FINAL) do
       if stepEnabledServer(k) then
@@ -110,6 +247,7 @@ local function computeRequiredStepsFromClient(requiredList)
   return requiredSet, cleanList
 end
 
+
 local function allNonFinalDone(done, requiredSet)
   requiredSet = requiredSet or {}
   for k, _ in pairs(requiredSet) do
@@ -119,13 +257,16 @@ local function allNonFinalDone(done, requiredSet)
 end
 
 local function randInCircle(radius)
-
+  -- uniform distribution in a circle
   local t = math.random() * 2.0 * math.pi
   local u = math.random()
   local r = math.sqrt(u) * radius
   return r * math.cos(t), r * math.sin(t)
 end
 
+--==============================
+-- Smarter Contracts: Modifiers
+--==============================
 local function rollContractModifiers(tierKey)
   local cm = Config.ContractModifiers
   if not cm or not cm.enabled then return {}, { payout = 1.0, alert = 1.0, radius = 1.0, duration = 1.0 }, {} end
@@ -188,6 +329,9 @@ local function rollContractModifiers(tierKey)
   return mods, mults, forced
 end
 
+--==============================
+-- Bonus Objectives (per-contract)
+--==============================
 local function rollBonusObjective(tierKey)
   local bo = Config.BonusObjectives
   if not bo or not bo.enabled then return nil end
@@ -226,6 +370,10 @@ local function rollBonusObjective(tierKey)
   return nil
 end
 
+
+--==============================
+-- Bonus Live Status Helpers
+--==============================
 local function sendBonusStatus(src, state, reason)
   TriggerClientEvent('gs-chopshop:client:bonusStatus', src, {
     state = state,
@@ -285,14 +433,17 @@ local function spawnContractVehicle(contract)
     return nil, "invalid_model"
   end
 
+  -- Pick a random point inside the search radius around the center
   local radius = tonumber(contract.searchRadius) or 180.0
   local cx, cy, cz = contract.searchCenter.x, contract.searchCenter.y, contract.searchCenter.z
   local ox, oy = randInCircle(radius)
   local x, y = cx + ox, cy + oy
   local z = cz + 1.0
 
+  -- Random heading, or use spawnBase heading if you want
   local heading = math.random(0, 359) + 0.0
 
+  -- (Optional) Try load model; depending on artifacts, this may or may not matter server-side
   if RequestModel then
     RequestModel(modelHash)
     local timeout = GetGameTimer() + 5000
@@ -315,10 +466,12 @@ local function spawnContractVehicle(contract)
   SetNetworkIdExistsOnAllMachines(netId, true)
   SetNetworkIdCanMigrate(netId, false)
 
+  -- store back into contract
   contract.netId = netId
 
   return veh, nil
 end
+
 
 local function makeContract(src, tierKey, uinfo)
   local tier = Config.Tiers[tierKey]
@@ -337,8 +490,10 @@ end
   local spawnBase = Util.Pick(Config.SpawnPoints)
   local plate = Util.MakePlate()
 
+  -- Roll modifiers (smarter contracts)
   local mods, mmults, forcedSteps = rollContractModifiers(tierKey)
 
+  -- Roll a bonus objective (optional)
   local bonusObj = rollBonusObjective(tierKey)
 
   local radius = (Config.Search and Config.Search.radius) or 180.0
@@ -350,7 +505,7 @@ end
 
   local duration = (Config.Contract and Config.Contract.durationSeconds) or 1800
   duration = math.floor(duration * (tonumber(mmults.duration or 1.0) or 1.0))
-  duration = math.max(300, duration)
+  duration = math.max(300, duration) -- never under 5 minutes
 
   local c = {
     tier = tierKey,
@@ -364,6 +519,7 @@ end
     netId = nil,
     found = false,
 
+    -- modifiers
     modifiers = mods,
     modMult = {
       payout = mmults.payout or 1.0,
@@ -373,6 +529,7 @@ end
     },
     forcedSteps = forcedSteps,
 
+    -- bonus objective (evaluated on completion)
     bonusObjective = bonusObj,
     bonus = { state = bonusObj and "active" or "none", failed = false, achieved = false },
   }
@@ -380,6 +537,7 @@ end
   return c
 end
 
+-- Forward declare since it's used before definition below
 local getUpgradeInfo
 
 local function giveFinalRewards(src, contract)
@@ -388,18 +546,37 @@ local function giveFinalRewards(src, contract)
 
   local player = FW.GetPlayer(src)
   local dbid = resolveDbId(src, player)
-  local uinfo = dbid and getUpgradeInfo(dbid) or nil
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
+
+  -- Personal upgrades + contract modifiers
   local payoutMult = (uinfo and uinfo.mult and uinfo.mult.payout) or 1.0
   if contract and contract.modMult and contract.modMult.payout then
     payoutMult = payoutMult * (tonumber(contract.modMult.payout) or 1.0)
+  end
+
+  -- Syndicate buffs (tree + active operations)
+  local ctx = getSyndicateContextByCid(dbid)
+  if ctx then
+    local sb = computeSyndicateBuffs(ctx)
+    payoutMult = payoutMult * (sb.payout or 1.0)
+
+  -- Black Market War contracts can boost payout
+  if contract and contract.bm and contract.bm.payoutMult then
+    payoutMult = payoutMult * (tonumber(contract.bm.payoutMult) or 1.0)
+  end
+
   end
 
   local cash = 0
   if tier.payout and tier.payout.cash then
     cash = Util.RandInt(tier.payout.cash.min or 0, tier.payout.cash.max or 0)
     cash = math.floor(cash * payoutMult)
+
     if player then
-      FW.AddMoney(player, 'cash', cash)
+      -- Pay through routing (if enabled)
+      payCashWithRouting(src, player, cash, ctx, 'CONTRACT_BASE')
     end
   end
 
@@ -439,182 +616,180 @@ local function enforceTierUnlock(src, player, tierKey)
   return true
 end
 
-getUpgradeInfo = function(cid)
+getUpgradeInfo = function(cid, ctx)
+  ctx = ctx or {}
   local u = (DB and DB.GetUpgrades) and DB.GetUpgrades(cid) or {}
   local cfg = Config.Upgrades or {}
   local pm = cfg.priceMult or 1.22
+  local extraPriceMult = tonumber(ctx and ctx.priceMult or 1.0) or 1.0
+  if extraPriceMult <= 0 then extraPriceMult = 1.0 end
 
   local function priceFor(key, level)
     local uc = cfg[key]
     if not uc then return 0 end
     local base = tonumber(uc.basePrice or 0) or 0
-    return math.floor(base * (pm ^ (level or 0)))
+    return math.floor((base * (pm ^ (level or 0))) * extraPriceMult)
   end
 
-  local timeMult = 1.0
-  local payoutMult = 1.0
-  local alertMult = 1.0
-  local radiusMult = 1.0
-  local finalMult = 1.0
-
-  local function lv(key) return tonumber(u[key] or 0) or 0 end
-  local function cfgOf(key) return cfg[key] end
-
-  do
-    local reduce = 0.0
-    local minM = 0.55
-    local keys = { 'chop_speed', 'tech_hand', 'shop_lift' }
-    for _, k in ipairs(keys) do
-      local c = cfgOf(k)
-      if c then
-        reduce = reduce + (tonumber(c.timeReducePerLevel or 0) or 0) * lv(k)
-        minM = math.min(minM, tonumber(c.minTimeMult or minM) or minM)
-      end
-    end
-    timeMult = math.max(minM, 1.0 - reduce)
+  local function clampMin(val, minv)
+    minv = tonumber(minv or 0) or 0
+    if minv <= 0 then return val end
+    return math.max(minv, val)
   end
 
-  do
-    local bonus = 0.0
-    local maxM = 3.0
-    local keys = { 'clean_payout', 'broker_cut', 'shop_compactor', 'net_fence', 'net_forgery', 'net_parts' }
-    for _, k in ipairs(keys) do
-      local c = cfgOf(k)
-      if c then
-        bonus = bonus + (tonumber(c.payoutBonusPerLevel or 0) or 0) * lv(k)
-        maxM = math.max(maxM, tonumber(c.maxPayoutMult or maxM) or maxM)
-      end
-    end
-    payoutMult = math.min(maxM, 1.0 + bonus)
+  local function clampMax(val, maxv)
+    maxv = tonumber(maxv or 0) or 0
+    if maxv <= 0 then return val end
+    return math.min(maxv, val)
   end
 
-  do
-    local reduce = 0.0
-    local minM = 0.35
-    local keys = { 'heat_dampener', 'shop_dampening' }
-    for _, k in ipairs(keys) do
-      local c = cfgOf(k)
-      if c then
-        reduce = reduce + (tonumber(c.alertReducePerLevel or 0) or 0) * lv(k)
-        minM = math.min(minM, tonumber(c.minAlertMult or minM) or minM)
-      end
-    end
-    alertMult = math.max(minM, 1.0 - reduce)
-  end
-
-  do
-    local reduce = 0.0
-    local minM = 0.55
-    local keys = { 'scanner', 'runner_instinct' }
-    for _, k in ipairs(keys) do
-      local c = cfgOf(k)
-      if c then
-        reduce = reduce + (tonumber(c.radiusReducePerLevel or 0) or 0) * lv(k)
-        minM = math.min(minM, tonumber(c.minRadiusMult or minM) or minM)
-      end
-    end
-    radiusMult = math.max(minM, 1.0 - reduce)
-  end
-
-  do
-    local reduce = 0.0
-    local minM = 0.55
-    local keys = { 'auto_dispatch', 'shop_shredder' }
-    for _, k in ipairs(keys) do
-      local c = cfgOf(k)
-      if c then
-        reduce = reduce + (tonumber(c.finalReducePerLevel or 0) or 0) * lv(k)
-        minM = math.min(minM, tonumber(c.minFinalMult or minM) or minM)
-      end
-    end
-    finalMult = math.max(minM, 1.0 - reduce)
-  end
-
-  local out = {
-    levels = u,
-    prices = {
-      chop_speed = priceFor('chop_speed', u.chop_speed or 0),
-      clean_payout = priceFor('clean_payout', u.clean_payout or 0),
-      heat_dampener = priceFor('heat_dampener', u.heat_dampener or 0),
-      scanner = priceFor('scanner', u.scanner or 0),
-      auto_dispatch = priceFor('auto_dispatch', u.auto_dispatch or 0),
-      tech_hand = priceFor('tech_hand', u.tech_hand or 0),
-      runner_instinct = priceFor('runner_instinct', u.runner_instinct or 0),
-      broker_cut = priceFor('broker_cut', u.broker_cut or 0),
-      shop_lift = priceFor('shop_lift', u.shop_lift or 0),
-      shop_dampening = priceFor('shop_dampening', u.shop_dampening or 0),
-      shop_compactor = priceFor('shop_compactor', u.shop_compactor or 0),
-      shop_shredder = priceFor('shop_shredder', u.shop_shredder or 0),
-      net_fence = priceFor('net_fence', u.net_fence or 0),
-      net_forgery = priceFor('net_forgery', u.net_forgery or 0),
-      net_parts = priceFor('net_parts', u.net_parts or 0),
-    },
-    caps = {
-      chop_speed = (cfg.chop_speed and cfg.chop_speed.maxLevel) or 0,
-      clean_payout = (cfg.clean_payout and cfg.clean_payout.maxLevel) or 0,
-      heat_dampener = (cfg.heat_dampener and cfg.heat_dampener.maxLevel) or 0,
-      scanner = (cfg.scanner and cfg.scanner.maxLevel) or 0,
-      auto_dispatch = (cfg.auto_dispatch and cfg.auto_dispatch.maxLevel) or 0,
-      tech_hand = (cfg.tech_hand and cfg.tech_hand.maxLevel) or 0,
-      runner_instinct = (cfg.runner_instinct and cfg.runner_instinct.maxLevel) or 0,
-      broker_cut = (cfg.broker_cut and cfg.broker_cut.maxLevel) or 0,
-      shop_lift = (cfg.shop_lift and cfg.shop_lift.maxLevel) or 0,
-      shop_dampening = (cfg.shop_dampening and cfg.shop_dampening.maxLevel) or 0,
-      shop_compactor = (cfg.shop_compactor and cfg.shop_compactor.maxLevel) or 0,
-      shop_shredder = (cfg.shop_shredder and cfg.shop_shredder.maxLevel) or 0,
-      net_fence = (cfg.net_fence and cfg.net_fence.maxLevel) or 0,
-      net_forgery = (cfg.net_forgery and cfg.net_forgery.maxLevel) or 0,
-      net_parts = (cfg.net_parts and cfg.net_parts.maxLevel) or 0,
-    },
-        defs = {
-      chop_speed = { stat = 'time', mode = 'reduce', per = (cfg.chop_speed and cfg.chop_speed.timeReducePerLevel) or 0, min = (cfg.chop_speed and cfg.chop_speed.minTimeMult) or 0.55 },
-      tech_hand = { stat = 'time', mode = 'reduce', per = (cfg.tech_hand and cfg.tech_hand.timeReducePerLevel) or 0, min = (cfg.tech_hand and cfg.tech_hand.minTimeMult) or 0.55 },
-      shop_lift = { stat = 'time', mode = 'reduce', per = (cfg.shop_lift and cfg.shop_lift.timeReducePerLevel) or 0, min = (cfg.shop_lift and cfg.shop_lift.minTimeMult) or 0.55 },
-
-      clean_payout = { stat = 'payout', mode = 'bonus', per = (cfg.clean_payout and cfg.clean_payout.payoutBonusPerLevel) or 0, max = (cfg.clean_payout and cfg.clean_payout.maxPayoutMult) or 3.0 },
-      broker_cut = { stat = 'payout', mode = 'bonus', per = (cfg.broker_cut and cfg.broker_cut.payoutBonusPerLevel) or 0, max = (cfg.broker_cut and cfg.broker_cut.maxPayoutMult) or 3.0 },
-      shop_compactor = { stat = 'payout', mode = 'bonus', per = (cfg.shop_compactor and cfg.shop_compactor.payoutBonusPerLevel) or 0, max = (cfg.shop_compactor and cfg.shop_compactor.maxPayoutMult) or 3.0 },
-      net_fence = { stat = 'payout', mode = 'bonus', per = (cfg.net_fence and cfg.net_fence.payoutBonusPerLevel) or 0, max = (cfg.net_fence and cfg.net_fence.maxPayoutMult) or 3.0 },
-      net_forgery = { stat = 'payout', mode = 'bonus', per = (cfg.net_forgery and cfg.net_forgery.payoutBonusPerLevel) or 0, max = (cfg.net_forgery and cfg.net_forgery.maxPayoutMult) or 3.0 },
-      net_parts = { stat = 'payout', mode = 'bonus', per = (cfg.net_parts and cfg.net_parts.payoutBonusPerLevel) or 0, max = (cfg.net_parts and cfg.net_parts.maxPayoutMult) or 3.0 },
-
-      heat_dampener = { stat = 'alert', mode = 'reduce', per = (cfg.heat_dampener and cfg.heat_dampener.alertReducePerLevel) or 0, min = (cfg.heat_dampener and cfg.heat_dampener.minAlertMult) or 0.35 },
-      shop_dampening = { stat = 'alert', mode = 'reduce', per = (cfg.shop_dampening and cfg.shop_dampening.alertReducePerLevel) or 0, min = (cfg.shop_dampening and cfg.shop_dampening.minAlertMult) or 0.35 },
-
-      scanner = { stat = 'radius', mode = 'reduce', per = (cfg.scanner and cfg.scanner.radiusReducePerLevel) or 0, min = (cfg.scanner and cfg.scanner.minRadiusMult) or 0.55 },
-      runner_instinct = { stat = 'radius', mode = 'reduce', per = (cfg.runner_instinct and cfg.runner_instinct.radiusReducePerLevel) or 0, min = (cfg.runner_instinct and cfg.runner_instinct.minRadiusMult) or 0.55 },
-
-      auto_dispatch = { stat = 'final', mode = 'reduce', per = (cfg.auto_dispatch and cfg.auto_dispatch.finalReducePerLevel) or 0, min = (cfg.auto_dispatch and cfg.auto_dispatch.minFinalMult) or 0.55 },
-      shop_shredder = { stat = 'final', mode = 'reduce', per = (cfg.shop_shredder and cfg.shop_shredder.finalReducePerLevel) or 0, min = (cfg.shop_shredder and cfg.shop_shredder.minFinalMult) or 0.45 },
-    },
-mult = {
-      time = timeMult,
-      payout = payoutMult,
-      alert = alertMult,
-      radius = radiusMult,
-      final = finalMult,
-    }
+  -- multipliers (defaults)
+  local mult = {
+    time = 1.0,
+    payout = 1.0,
+    alert = 1.0,
+    radius = 1.0,
+    final = 1.0,
   }
 
-  return out
+  -- Apply upgrade effects dynamically based on fields present
+  for key, uc in pairs(cfg) do
+    if key ~= 'priceAccount' and key ~= 'priceMult' and type(uc) == 'table' then
+      local lv = tonumber(u[key] or 0) or 0
+
+      if uc.timeReducePerLevel then
+        local v = 1.0 - (tonumber(uc.timeReducePerLevel) or 0) * lv
+        mult.time = clampMin(mult.time * v, uc.minTimeMult)
+      end
+
+      if uc.payoutBonusPerLevel then
+        local v = 1.0 + (tonumber(uc.payoutBonusPerLevel) or 0) * lv
+        v = clampMax(v, uc.maxPayoutMult)
+        mult.payout = mult.payout * v
+      end
+
+      if uc.alertReducePerLevel then
+        local v = 1.0 - (tonumber(uc.alertReducePerLevel) or 0) * lv
+        mult.alert = clampMin(mult.alert * v, uc.minAlertMult)
+      end
+
+      if uc.radiusReducePerLevel then
+        local v = 1.0 - (tonumber(uc.radiusReducePerLevel) or 0) * lv
+        mult.radius = clampMin(mult.radius * v, uc.minRadiusMult)
+      end
+
+      if uc.finalReducePerLevel then
+        local v = 1.0 - (tonumber(uc.finalReducePerLevel) or 0) * lv
+        mult.final = clampMin(mult.final * v, uc.minFinalMult)
+      end
+    end
+  end
+
+  -- Role + synergy (co-op)
+  local role = (DB and DB.GetRole) and DB.GetRole(cid) or nil
+  local rolesCfg = Config.Roles or {}
+  if rolesCfg.enabled and role and rolesCfg.defs and rolesCfg.defs[role] and rolesCfg.defs[role].mult then
+    for k, v in pairs(rolesCfg.defs[role].mult) do
+      mult[k] = mult[k] * (tonumber(v) or 1.0)
+    end
+  end
+
+  
+  -- Syndicate perks (shared)
+  if DB and DB.GetPlayerSyndicate and DB.GetSyndicatePerks then
+    local s = DB.GetPlayerSyndicate(cid)
+    if s and (s.id or 0) > 0 then
+      local perks = DB.GetSyndicatePerks(s.id)
+      local lvPayout = tonumber(perks.payoutMult or 0) or 0
+      local lvTime   = tonumber(perks.timeMult or 0) or 0
+      local lvRad    = tonumber(perks.radiusMult or 0) or 0
+      if lvPayout > 0 then mult.payout = mult.payout * (1.0 + 0.02 * lvPayout) end
+      if lvTime > 0 then mult.time   = clampMin(mult.time * (1.0 - 0.02 * lvTime), 0.50) end
+      if lvRad > 0 then mult.radius = clampMin(mult.radius * (1.0 - 0.03 * lvRad), 0.50) end
+    end
+  end
+
+-- If we have a partner, attempt synergy bonuses
+  local partnerRole = nil
+  if ctx.partnerCid and DB and DB.GetRole then
+    partnerRole = DB.GetRole(ctx.partnerCid)
+  end
+  local synergyLabel = nil
+  if rolesCfg.enabled and rolesCfg.synergies and role and partnerRole then
+    local a, b = tostring(role), tostring(partnerRole)
+    local key1 = a .. '_' .. b
+    local key2 = b .. '_' .. a
+    local s = rolesCfg.synergies[key1] or rolesCfg.synergies[key2]
+    if s and s.mult then
+      synergyLabel = s.label
+      for k, v in pairs(s.mult) do
+        mult[k] = mult[k] * (tonumber(v) or 1.0)
+      end
+    end
+  end
+
+  -- Syndicate passive bonuses
+  local synd = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not synd then synd = { id = 0, name = nil, level = 0, influence = 0, rank = 0 } end
+  if Config.Syndicate and Config.Syndicate.enabled then
+    local lvl = tonumber(synd.level or 0) or 0
+    local per = Config.Syndicate.perLevel or {}
+    if per.payout and per.payout ~= 0 then
+      mult.payout = mult.payout * (1.0 + math.max(0.0, lvl * (tonumber(per.payout) or 0)))
+    end
+    if per.time and per.time ~= 0 then
+      local t = 1.0 - math.max(0.0, lvl * (tonumber(per.time) or 0))
+      mult.time = mult.time * math.max(0.55, t)
+    end
+  end
+
+  -- Prices + caps (dynamic) + caps (dynamic)
+  local prices = {}
+  local caps = {}
+  for key, uc in pairs(cfg) do
+    if key ~= 'priceAccount' and key ~= 'priceMult' and type(uc) == 'table' then
+      local lv = tonumber(u[key] or 0) or 0
+      prices[key] = priceFor(key, lv)
+      caps[key] = tonumber(uc.maxLevel or 0) or 0
+    end
+  end
+
+  return {
+    levels = u,
+    prices = prices,
+    caps = caps,
+    mult = mult,
+    role = role,
+    partnerRole = partnerRole,
+    synergy = synergyLabel,
+    syndicate = synd,
+  }
 end
+
 
 local function pushData(src)
   local player = FW.GetPlayer(src)
   if not player then return end
-
+  -- DB is keyed by citizenid.
   local cid = FW.GetCid(player)
   local dbid = cid
   local contract = getContract(src)
   local session = ActiveSessions[src]
 
   local top = (Config.Leaderboard and Config.Leaderboard.enabled) and DB.GetTop(Config.Leaderboard.topCount or 10) or {}
+  local topSynd = (Config.Leaderboard and Config.Leaderboard.enabled and DB.GetTopSyndicates) and DB.GetTopSyndicates(Config.Leaderboard.topCount or 10) or {}
   local hist = DB.GetHistory(dbid, 10)
   local prog = DB.GetTierProgress(dbid)
   prog.rep = (DB.GetRep and DB.GetRep(dbid)) or 0
   local profile = (DB.GetProfile and DB.GetProfile(dbid)) or { alias = nil, privacy = 1 }
-  local uinfo = dbid and getUpgradeInfo(dbid) or nil
 
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
+
+  -- IMPORTANT: don't send the raw session table.
+  -- session.required is a server-side set/map (NOT an ordered list) and it will break the NUI
+  -- which expects session.requiredList to be an array.
   local safeSession = nil
   if session then
     safeSession = {
@@ -630,6 +805,7 @@ local function pushData(src)
 
   TriggerClientEvent('gs-chopshop:client:receiveData', src, {
     serverTime = os.time(),
+    me = { citizenid = dbid },
     debug = (type(Config.Debug) == 'table' and Config.Debug.enabled) and {
       dbReady = (DB and DB.Ready) and true or false,
       cid = cid,
@@ -651,10 +827,78 @@ local function pushData(src)
       specialTag = contract.specialTag,
     } or nil,
     session = safeSession,
-    leaderboard = top,
+	    leaderboard = top,
+	    topSyndicates = topSynd,
     history = hist,
     progress = prog,
+    toolMastery = (function()
+      local ok, m = pcall(function()
+        local r = GetCurrentResourceName()
+        if exports and exports[r] and exports[r].GetToolMasteryForCid then
+          return exports[r]:GetToolMasteryForCid(dbid)
+        end
+        return (DB and DB.GetToolMastery and DB.GetToolMastery(dbid)) or nil
+      end)
+      if ok then return m end
+      return nil
+    end)(),
     upgrades = uinfo,
+    syndicate = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(dbid) or nil,
+    syndicateMembers = (DB and DB.GetPlayerSyndicate and DB.GetSyndicateMembers) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicateMembers(s.id) end
+      return {}
+    end)() or {},
+    syndicateVault = (DB and DB.GetPlayerSyndicate and DB.GetVault) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetVault(s.id) end
+      return 0
+    end)() or 0,
+    syndicateVaultTx = (DB and DB.GetPlayerSyndicate and DB.GetVaultTx) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetVaultTx(s.id, 10) end
+      return {}
+    end)() or {},
+    syndicatePerks = (DB and DB.GetPlayerSyndicate and DB.GetSyndicatePerks) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicatePerks(s.id) end
+      return {}
+    end)() or {},
+    syndicateSettings = (DB and DB.GetPlayerSyndicate and DB.GetSyndicateSettings) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicateSettings(s.id) end
+      return { routingEnabled = false, routingPercent = (Config.SyndicateRevenueRouting and Config.SyndicateRevenueRouting.defaultPercent) or 0.15, branding = {} }
+    end)() or nil,
+    syndicateStatsAgg = (DB and DB.GetPlayerSyndicate and DB.GetSyndicateStatsAgg) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicateStatsAgg(s.id) end
+      return {}
+    end)() or {},
+    syndicateOp = (DB and DB.GetPlayerSyndicate and DB.GetSyndicateOp) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicateOp(s.id) end
+      return { opId = nil, activeUntil = 0, cooldownUntil = 0, meta = {} }
+    end)() or {},
+    syndicateTreeCfg = (Config.SyndicateTree and Config.SyndicateTree.nodes) or {},
+    syndicateOpsCfg = (Config.SyndicateOperations and Config.SyndicateOperations.defs) or {},
+    syndicatePrestigeCfg = Config.SyndicatePrestige or {},
+
+    syndicatePermsCfg = Config.SyndicatePermissions or {},
+    syndicateRoutingCfg = Config.SyndicateRevenueRouting or {},
+    blackMarketCfg = Config.BlackMarketWar or {},
+
+    roleDefs = nil,
+    syndicateCfg = (Config.Syndicate and Config.Syndicate.enabled) and { influencePerLevel = Config.Syndicate.influencePerLevel } or nil,
+    syndicatePerkCfg = Config.SyndicatePerks or {},
+    syndicatePrestige = (DB and DB.GetPlayerSyndicate and DB.GetSyndicatePrestige) and (function()
+      local s = DB.GetPlayerSyndicate(dbid)
+      if s and s.id and s.id > 0 then return DB.GetSyndicatePrestige(s.id) end
+      return { prestige = 0, points = 0, winStreak = 0 }
+    end)() or { prestige = 0, points = 0, winStreak = 0 },
+    bmEvent = (War and War.GetState) and War.GetState() or { active = false },
+    bmPool = (War and War.GetPool) and War.GetPool() or {},
+    bmLeaderboard = (War and War.GetLeaderboard) and War.GetLeaderboard(10) or {},
+
     profile = profile,
     special = {
       repRequired = (Config.SpecialContracts and Config.SpecialContracts.repRequired) or 0,
@@ -662,6 +906,15 @@ local function pushData(src)
     },
   })
 end
+
+-- Expose internal helpers for other server scripts (Black Market, etc.)
+GSCS = GSCS or {}
+GSCS.ActiveContracts = ActiveContracts
+GSCS.ActiveSessions = ActiveSessions
+GSCS.MakeContract = makeContract
+GSCS.RollContractModifiers = rollContractModifiers
+GSCS.PushData = pushData
+
 
 RegisterNetEvent('gs-chopshop:server:requestData', function()
   local src = source
@@ -682,7 +935,9 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
   end
 
   local dbid = resolveDbId(src, player)
-  local uinfo = getUpgradeInfo(dbid)
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult })
   local levels = (uinfo and uinfo.levels) or {}
   local caps = (uinfo and uinfo.caps) or {}
   local current = tonumber(levels[upgradeId] or 0) or 0
@@ -705,7 +960,7 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
     DB.SetUpgrade(dbid, upgradeId, current + 1)
   end)
   if not ok then
-
+    -- Refund on DB failure so upgrades never "eat" money.
     FW.AddMoney(player, acct, price)
     print(('^1[gs-chopshop]^0 Upgrade DB error (%s): %s'):format(upgradeId, tostring(err)))
     TriggerClientEvent('gs-chopshop:client:notify', src, 'Upgrade purchase failed (DB). Refunded.', 'error')
@@ -716,6 +971,7 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
   TriggerClientEvent('gs-chopshop:client:notify', src,
     ('%s upgraded to Level %d.'):format(uc.label or upgradeId, current + 1), 'success')
 
+  -- Push twice: once now, and again shortly after (covers slower DB backends)
   pushData(src)
   CreateThread(function()
     Wait(350)
@@ -723,6 +979,11 @@ RegisterNetEvent('gs-chopshop:server:buyUpgrade', function(upgradeId)
   end)
 end)
 
+-- Admin/debug: instantly simulate a completed chop to test UI/DB without running the whole flow.
+-- Usage:
+--   /choptest            -> tier1, $5000
+--   /choptest tier2      -> tier2, $5000
+--   /choptest tier3 9000 -> tier3, $9000
 RegisterCommand('choptest', function(src, args)
   if src == 0 then return end
 
@@ -744,6 +1005,7 @@ RegisterCommand('choptest', function(src, args)
   local dbid, cid, license = resolveDbId(src, player)
   local name = FW.GetName(player)
 
+  -- Write stats/progress like a successful completion.
   local ok, err = pcall(function()
     if DB and DB.AddResult then
       local baseRep = (Config.Reputation and tonumber(Config.Reputation.basePerChop or 0)) or 0
@@ -760,6 +1022,7 @@ RegisterCommand('choptest', function(src, args)
     return
   end
 
+  -- Read back immediately so we can confirm DB writes are working.
   local prog = (DB and DB.GetTierProgress) and DB.GetTierProgress(dbid) or { tier1 = 0, tier2 = 0, tier3 = 0 }
   prog.rep = (DB and DB.GetRep and DB.GetRep(dbid)) or 0
 
@@ -767,6 +1030,7 @@ RegisterCommand('choptest', function(src, args)
     ('ChopTest: %s +$%d | Progress now: T1=%d T2=%d T3=%d'):format(tierKey, earned, prog.tier1 or 0, prog.tier2 or 0, prog.tier3 or 0),
     'success')
 
+  -- Actually grant the money too (helps verify economy hooks quickly)
   FW.AddMoney(player, 'cash', earned)
 
   pushData(src)
@@ -777,6 +1041,7 @@ RegisterCommand('choptest', function(src, args)
   end)
 end, false)
 
+-- Admin/debug: print identifier resolution + DB row counts (helps diagnose "DB has data but UI shows 0").
 RegisterCommand('chopdebug', function(src)
   if src == 0 then return end
   if not IsPlayerAceAllowed(src, 'gs-chopshop.admin') then
@@ -835,12 +1100,15 @@ RegisterCommand('chopdb', function(src)
   end
 end, true)
 
+
 RegisterNetEvent('gs-chopshop:server:startContract', function(tierKey)
   local src = source
   local player = FW.GetPlayer(src)
   if not player then return end
   local dbid = resolveDbId(src, player)
-  local uinfo = dbid and getUpgradeInfo(dbid) or nil
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
 
   if onCooldown(src) then
     TriggerClientEvent('gs-chopshop:client:notify', src, 'You must wait before starting another contract.', 'error')
@@ -865,7 +1133,9 @@ RegisterNetEvent('gs-chopshop:server:startContract', function(tierKey)
   ActiveContracts[src] = contract
   setCooldown(src)
 
-Wait(0)
+-- Ask client to spawn the contract vehicle inside the radius safely
+
+Wait(0) -- one tick is enough
 
 TriggerClientEvent('gs-chopshop:client:spawnContractVehicle', src, {
   model = contract.model,
@@ -890,6 +1160,9 @@ TriggerClientEvent('gs-chopshop:client:spawnContractVehicle', src, {
   pushData(src)
 end)
 
+--==============================
+-- Special Contracts (rep-gated)
+--==============================
 RegisterNetEvent('gs-chopshop:server:startSpecialContract', function()
   local src = source
   local player = FW.GetPlayer(src)
@@ -919,7 +1192,9 @@ RegisterNetEvent('gs-chopshop:server:startSpecialContract', function()
   end
 
   local dbid = resolveDbId(src, player)
-  local uinfo = dbid and getUpgradeInfo(dbid) or nil
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
   local contract, err = makeContract(src, sc.baseTier or 'tier3', uinfo)
   if not contract then
     TriggerClientEvent('gs-chopshop:client:notify', src, err or 'Failed to create special contract.', 'error')
@@ -931,15 +1206,15 @@ RegisterNetEvent('gs-chopshop:server:startSpecialContract', function()
   contract.modMult = contract.modMult or { payout = 1.0, alert = 1.0, radius = 1.0, duration = 1.0 }
   contract.modMult.payout = (contract.modMult.payout or 1.0) * (tonumber(sc.payoutMult or 1.35) or 1.35)
   contract.modMult.alert  = (contract.modMult.alert or 1.0)  * (tonumber(sc.alertMult  or 1.10) or 1.10)
-
+  -- Make specials always show at least 2 modifiers so it feels different.
   local wantMin = tonumber(sc.minMods or 2) or 2
   if (contract.modifiers and #contract.modifiers or 0) < wantMin then
-
+    -- temporarily bump minActive and reroll
     local oldMin, oldMax = Config.ContractModifiers.minActive, Config.ContractModifiers.maxActive
     Config.ContractModifiers.minActive = wantMin
     Config.ContractModifiers.maxActive = math.max(wantMin, tonumber(sc.maxMods or 3) or 3)
     contract.modifiers, contract.modMult, contract.forcedSteps = rollContractModifiers(contract.tier)
-
+    -- re-apply special mults
     contract.modMult.payout = (contract.modMult.payout or 1.0) * (tonumber(sc.payoutMult or 1.35) or 1.35)
     contract.modMult.alert  = (contract.modMult.alert or 1.0)  * (tonumber(sc.alertMult  or 1.10) or 1.10)
     Config.ContractModifiers.minActive, Config.ContractModifiers.maxActive = oldMin, oldMax
@@ -977,6 +1252,9 @@ RegisterNetEvent('gs-chopshop:server:startSpecialContract', function()
   pushData(src)
 end)
 
+--==============================
+-- Profile (alias/privacy)
+--==============================
 RegisterNetEvent('gs-chopshop:server:setProfile', function(alias, privacy)
   local src = source
   local player = FW.GetPlayer(src)
@@ -987,36 +1265,601 @@ RegisterNetEvent('gs-chopshop:server:setProfile', function(alias, privacy)
   end
   pushData(src)
 end)
-
-RegisterNetEvent('gs-chopshop:server:coopInvite', function(target)
+-- Co-op roles removed. Keep event for backward compatibility.
+RegisterNetEvent('gs-chopshop:server:setRole', function()
   local src = source
-  target = tonumber(target or 0) or 0
-  if target <= 0 or GetPlayerPing(target) <= 0 then return end
-  if src == target then return end
-
-  Coop.pending[target] = { from = src, expires = now() + 30 }
-  TriggerClientEvent('gs-chopshop:client:coopInvite', target, src)
-  TriggerClientEvent('gs-chopshop:client:notify', src, 'Invite sent.', 'inform')
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Co-op roles removed. Use Syndicate ranks instead.', 'inform')
 end)
 
-RegisterNetEvent('gs-chopshop:server:coopRespond', function(accept)
-  local target = source
-  local p = Coop.pending[target]
-  if not p or (p.expires or 0) < now() then
-    Coop.pending[target] = nil
+
+RegisterNetEvent('gs-chopshop:server:createSyndicate', function(name)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  if not (Config.Syndicate and Config.Syndicate.enabled) then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Syndicate disabled.', 'error')
     return
   end
-  Coop.pending[target] = nil
-  local leader = p.from
-  if not accept then
-    TriggerClientEvent('gs-chopshop:client:notify', leader, 'Invite declined.', 'error')
+
+  local cid = FW.GetCid(player)
+  if not (DB and DB.CreateSyndicate and DB.GetPlayerSyndicate) then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'DB not ready.', 'error')
     return
   end
-  Coop.leaderToPartner[leader] = target
-  Coop.partnerToLeader[target] = leader
-  TriggerClientEvent('gs-chopshop:client:notify', leader, 'Co-op linked.', 'success')
-  TriggerClientEvent('gs-chopshop:client:notify', target, 'Co-op linked.', 'success')
+
+  local existing = DB.GetPlayerSyndicate(cid)
+  if existing and existing.id and existing.id > 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are already in a syndicate.', 'error')
+    return
+  end
+
+  local id, err = DB.CreateSyndicate(cid, name)
+  if not id then
+    if err == 'invalid' then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Invalid syndicate name.', 'error')
+    else
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Syndicate name taken or creation failed.', 'error')
+    end
+    return
+  end
+
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Syndicate created.', 'success')
+  -- push fresh data so UI updates immediately
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
 end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:disband', function()
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  if not (DB and DB.GetPlayerSyndicate and DB.DeleteSyndicate) then return end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or not s.id or s.id <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'No syndicate to disband.', 'error')
+    return
+  end
+  if s.owner ~= cid then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Only the boss can disband.', 'error')
+    return
+  end
+  local members = (DB and DB.GetSyndicateMembers) and DB.GetSyndicateMembers(s.id) or {}
+  DB.DeleteSyndicate(s.id)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Syndicate disbanded.', 'success')
+  for i=1, #(members or {}) do
+    local mid = members[i] and members[i].citizenid
+    if mid then
+      local ms = getSourceByCid(mid)
+      if ms then TriggerClientEvent('gs-chopshop:client:forceRefresh', ms) end
+    end
+  end
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:leave', function()
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  if not (DB and DB.GetPlayerSyndicate and DB.RemoveMember) then return end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or not s.id or s.id <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+  if s.owner == cid then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Boss must disband, not leave.', 'error')
+    return
+  end
+  DB.RemoveMember(s.id, cid)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'You left the syndicate.', 'success')
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:invite', function(targetSrc)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  targetSrc = tonumber(targetSrc or 0) or 0
+  if targetSrc <= 0 then return end
+  local target = FW.GetPlayer(targetSrc)
+  if not target then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Player not found.', 'error')
+    return
+  end
+
+  local cid = FW.GetCid(player)
+  local tcid = FW.GetCid(target)
+  if not (DB and DB.GetPlayerSyndicate) then return end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or not s.id or s.id <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Create a syndicate first.', 'error')
+    return
+  end
+  if s.rank < 2 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough rank to invite.', 'error')
+    return
+  end
+  local targetS = DB.GetPlayerSyndicate(tcid)
+  if targetS and targetS.id and targetS.id > 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Player already in a syndicate.', 'error')
+    return
+  end
+
+  TriggerClientEvent('gs-chopshop:client:syndicateInvite', targetSrc, {
+    syndicateId = s.id,
+    name = s.name,
+    from = src,
+  })
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Invite sent.', 'success')
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:acceptInvite', function(syndId)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  syndId = tonumber(syndId or 0) or 0
+  if syndId <= 0 then return end
+  if not (DB and DB.AddMember and DB.GetPlayerSyndicate) then return end
+  local existing = DB.GetPlayerSyndicate(cid)
+  if existing and existing.id and existing.id > 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are already in a syndicate.', 'error')
+    return
+  end
+  DB.AddMember(syndId, cid, 1)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Joined syndicate.', 'success')
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+-- Syndicate management (rank + kick)
+RegisterNetEvent('gs-chopshop:server:syndicate:setRank', function(targetCid, newRank)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  targetCid = tostring(targetCid or '')
+  newRank = tonumber(newRank or 0) or 0
+  if targetCid == '' or newRank < 1 or newRank > 3 then return end
+
+  if not (DB and DB.GetPlayerSyndicate and DB.SetMemberRank) then return end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+  local t = DB.GetPlayerSyndicate(targetCid)
+  if not t or t.id ~= s.id then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Target not in your syndicate.', 'error')
+    return
+  end
+  if s.rank < 2 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough rank.', 'error')
+    return
+  end
+  if s.rank == 2 then
+    if t.rank >= 2 then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'You cannot modify officers/boss.', 'error')
+      return
+    end
+    if newRank ~= 1 then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Officers cannot promote.', 'error')
+      return
+    end
+  end
+  if t.rank == 3 and targetCid ~= cid then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Cannot change boss rank.', 'error')
+    return
+  end
+
+  DB.SetMemberRank(s.id, targetCid, newRank)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Rank updated.', 'success')
+
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+  local ts = getSourceByCid(targetCid)
+  if ts then TriggerClientEvent('gs-chopshop:client:forceRefresh', ts) end
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:kick', function(targetCid)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  targetCid = tostring(targetCid or '')
+  if targetCid == '' then return end
+
+  if not (DB and DB.GetPlayerSyndicate and DB.RemoveMember) then return end
+  local s = DB.GetPlayerSyndicate(cid)
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+  local t = DB.GetPlayerSyndicate(targetCid)
+  if not t or t.id ~= s.id then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Target not in your syndicate.', 'error')
+    return
+  end
+  if t.rank == 3 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Cannot kick the boss.', 'error')
+    return
+  end
+  if s.rank < 2 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough rank.', 'error')
+    return
+  end
+  if s.rank == 2 and t.rank >= 2 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Officers can only kick members.', 'error')
+    return
+  end
+
+  DB.RemoveMember(s.id, targetCid)
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Member removed.', 'success')
+  local ts = getSourceByCid(targetCid)
+  if ts then
+    TriggerClientEvent('gs-chopshop:client:notify', ts, 'You were removed from the syndicate.', 'error')
+    TriggerClientEvent('gs-chopshop:client:forceRefresh', ts)
+  end
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+
+
+-- Syndicate Vault (shared bank)
+RegisterNetEvent('gs-chopshop:server:syndicate:deposit', function(amount)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  amount = math.floor(tonumber(amount or 0) or 0)
+  if amount <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Invalid amount.', 'error')
+    return
+  end
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+
+  local ok = FW.RemoveMoney(player, 'bank', amount)
+  if not ok then
+    ok = FW.RemoveMoney(player, 'cash', amount)
+  end
+  if not ok then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough money.', 'error')
+    return
+  end
+
+  if DB and DB.DepositToVault then
+    DB.DepositToVault(s.id, cid, amount)
+  end
+  TriggerClientEvent('gs-chopshop:client:notify', src, ('Deposited $%s to vault.'):format(amount), 'success')
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:withdraw', function(amount)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  amount = math.floor(tonumber(amount or 0) or 0)
+  if amount <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Invalid amount.', 'error')
+    return
+  end
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+  -- Capo+ can withdraw
+  if (s.rank or 1) < 2 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough rank to withdraw.', 'error')
+    return
+  end
+
+  local ok, err = (DB and DB.WithdrawFromVault) and DB.WithdrawFromVault(s.id, cid, amount)
+  if not ok then
+    TriggerClientEvent('gs-chopshop:client:notify', src, (err == 'insufficient') and 'Vault is empty.' or 'Withdraw failed.', 'error')
+    return
+  end
+  FW.AddMoney(player, 'bank', amount)
+  TriggerClientEvent('gs-chopshop:client:notify', src, ('Withdrew $%s from vault.'):format(amount), 'success')
+  TriggerClientEvent('gs-chopshop:client:forceRefresh', src)
+end)
+
+-- Syndicate Influence Shop (shared perks)
+RegisterNetEvent('gs-chopshop:server:syndicate:buyPerk', function(perkId)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+  perkId = tostring(perkId or '')
+  if perkId == '' then return end
+
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'You are not in a syndicate.', 'error')
+    return
+  end
+
+  if not hasSyndPerm(s, 'purchase') then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not enough rank to purchase upgrades.', 'error')
+    return
+  end
+
+  local tree = (Config.SyndicateTree and Config.SyndicateTree.nodes) or {}
+  local node = tree[perkId]
+  local perks = (DB and DB.GetSyndicatePerks) and DB.GetSyndicatePerks(s.id) or {}
+  local cur = tonumber(perks[perkId] or 0) or 0
+
+  -- If node doesn't exist in the new tree, fall back to legacy influence shop (kept for backwards compat)
+  if not node then
+    local perkCfg = (Config.SyndicatePerks or {})[perkId]
+    if not perkCfg then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Unknown upgrade.', 'error')
+      return
+    end
+    local cap = tonumber(perkCfg.maxLevel or 0) or 0
+    if cap > 0 and cur >= cap then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Already maxed.', 'error')
+      return
+    end
+    local cost = tonumber(perkCfg.baseCost or 0) or 0
+    local growth = tonumber(perkCfg.growth or 0) or 0
+    local price = math.floor(cost * ((1.0 + growth) ^ cur))
+    if (s.influence or 0) < price then
+      TriggerClientEvent('gs-chopshop:client:notify', src, ('Not enough influence. Need %s.'):format(price), 'error')
+      return
+    end
+    if DB and DB.SetSyndicateStats then
+      DB.SetSyndicateStats(s.id, s.level or 0, (s.influence or 0) - price)
+    end
+    if DB and DB.SetSyndicatePerk then
+      DB.SetSyndicatePerk(s.id, perkId, cur + 1)
+    end
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Upgrade purchased.', 'success')
+  else
+    local cap = tonumber(node.maxLevel or 0) or 0
+    if cap > 0 and cur >= cap then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Already maxed.', 'error')
+      return
+    end
+
+    local minLevel = tonumber(node.minLevel or 0) or 0
+    if (tonumber(s.level or 0) or 0) < minLevel then
+      TriggerClientEvent('gs-chopshop:client:notify', src, ('Requires Syndicate Level %d.'):format(minLevel), 'error')
+      return
+    end
+
+    if node.requires and type(node.requires) == 'table' then
+      for reqId, reqLv in pairs(node.requires) do
+        local haveLv = tonumber(perks[reqId] or 0) or 0
+        if haveLv < (tonumber(reqLv or 0) or 0) then
+          TriggerClientEvent('gs-chopshop:client:notify', src, 'Missing prerequisite upgrade(s).', 'error')
+          return
+        end
+      end
+    end
+
+    local baseFunds = tonumber(node.cost and node.cost.funds or 0) or 0
+    local baseInf   = tonumber(node.cost and node.cost.influence or 0) or 0
+    local growth    = tonumber(node.cost and node.cost.growth or 0) or 0
+
+    local fundsCost = math.floor(baseFunds * ((1.0 + growth) ^ cur))
+    local infCost   = math.floor(baseInf   * ((1.0 + growth) ^ cur))
+
+    if fundsCost < 0 then fundsCost = 0 end
+    if infCost < 0 then infCost = 0 end
+
+    local vault = (DB and DB.GetVault) and DB.GetVault(s.id) or 0
+    if vault < fundsCost then
+      TriggerClientEvent('gs-chopshop:client:notify', src, ('Syndicate funds too low. Need $%d.'):format(fundsCost), 'error')
+      return
+    end
+    if (tonumber(s.influence or 0) or 0) < infCost then
+      TriggerClientEvent('gs-chopshop:client:notify', src, ('Not enough influence. Need %d.'):format(infCost), 'error')
+      return
+    end
+
+    -- Spend funds + influence
+    if fundsCost > 0 and DB and DB.WithdrawFromVault then
+      local ok = DB.WithdrawFromVault(s.id, cid, fundsCost)
+      if not ok then
+        TriggerClientEvent('gs-chopshop:client:notify', src, 'Funds spend failed.', 'error')
+        return
+      end
+      if DB.AddVaultTx then
+        DB.AddVaultTx(s.id, cid, fundsCost, 'perk', ('PERK:%s'):format(perkId), { nextLevel = cur + 1 })
+      end
+    end
+
+    if infCost > 0 and DB and DB.SetSyndicateStats then
+      DB.SetSyndicateStats(s.id, s.level or 0, (tonumber(s.influence or 0) or 0) - infCost)
+    end
+
+    if DB and DB.SetSyndicatePerk then
+      DB.SetSyndicatePerk(s.id, perkId, cur + 1)
+    end
+
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Syndicate upgrade unlocked.', 'success')
+  end
+
+  -- Refresh all online members
+  local members = (DB and DB.GetSyndicateMembers) and DB.GetSyndicateMembers(s.id) or {}
+  for i=1, #(members or {}) do
+    local mid = members[i] and members[i].citizenid
+    local ms = mid and getSourceByCid(mid)
+    if ms then TriggerClientEvent('gs-chopshop:client:forceRefresh', ms) end
+  end
+
+-- Syndicate routing + branding + operations
+RegisterNetEvent('gs-chopshop:server:syndicate:setRouting', function(enabled, percent)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'No syndicate.', 'error')
+    return
+  end
+  if not hasSyndPerm(s, 'routing') then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not allowed.', 'error')
+    return
+  end
+
+  local cfg = Config.SyndicateRevenueRouting or {}
+  local pct = tonumber(percent or cfg.defaultPercent or 0.15) or 0.15
+  pct = math.max(tonumber(cfg.minPercent or 0.0) or 0.0, math.min(tonumber(cfg.maxPercent or 0.35) or 0.35, pct))
+
+  if DB and DB.SetSyndicateSettings then
+    local cur = (DB.GetSyndicateSettings and DB.GetSyndicateSettings(s.id)) or { branding = {} }
+    cur.routingEnabled = enabled and true or false
+    cur.routingPercent = pct
+    DB.SetSyndicateSettings(s.id, cur)
+  end
+
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Routing updated.', 'success')
+  local members = (DB and DB.GetSyndicateMembers) and DB.GetSyndicateMembers(s.id) or {}
+  for i=1, #(members or {}) do
+    local ms = getSourceByCid(members[i].citizenid)
+    if ms then TriggerClientEvent('gs-chopshop:client:forceRefresh', ms) end
+  end
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:setBranding', function(branding)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'No syndicate.', 'error')
+    return
+  end
+  if not hasSyndPerm(s, 'branding') then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not allowed.', 'error')
+    return
+  end
+
+  branding = branding or {}
+  if type(branding) ~= 'table' then branding = {} end
+  branding.tag = branding.tag and tostring(branding.tag):sub(1, 12) or nil
+  branding.color = branding.color and tostring(branding.color):sub(1, 16) or nil
+  branding.logo = branding.logo and tostring(branding.logo):sub(1, 32) or nil
+
+  if DB and DB.SetSyndicateSettings then
+    local cur = (DB.GetSyndicateSettings and DB.GetSyndicateSettings(s.id)) or {}
+    cur.branding = branding
+    DB.SetSyndicateSettings(s.id, cur)
+  end
+
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Branding updated.', 'success')
+  local members = (DB and DB.GetSyndicateMembers) and DB.GetSyndicateMembers(s.id) or {}
+  for i=1, #(members or {}) do
+    local ms = getSourceByCid(members[i].citizenid)
+    if ms then TriggerClientEvent('gs-chopshop:client:forceRefresh', ms) end
+  end
+end)
+
+RegisterNetEvent('gs-chopshop:server:syndicate:startOp', function(opId)
+  local src = source
+  local player = FW.GetPlayer(src)
+  if not player then return end
+  local cid = FW.GetCid(player)
+
+  local s = (DB and DB.GetPlayerSyndicate) and DB.GetPlayerSyndicate(cid) or nil
+  if not s or (s.id or 0) <= 0 then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'No syndicate.', 'error')
+    return
+  end
+  if not hasSyndPerm(s, 'ops') then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Not allowed.', 'error')
+    return
+  end
+
+  local defs = (Config.SyndicateOperations and Config.SyndicateOperations.defs) or {}
+  local d = defs[tostring(opId or '')]
+  if not d then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Unknown operation.', 'error')
+    return
+  end
+
+  local ctx = getSyndicateContextByCid(cid)
+  local buffs = computeSyndicateBuffs(ctx)
+  if not buffs.opsUnlocked then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Operations locked. Unlock Operations Department first.', 'error')
+    return
+  end
+
+  local opState = (DB and DB.GetSyndicateOp) and DB.GetSyndicateOp(s.id) or { activeUntil=0, cooldownUntil=0 }
+  local tnow = now()
+  if (tonumber(opState.cooldownUntil or 0) or 0) > tnow then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'Operation on cooldown.', 'error')
+    return
+  end
+  if (tonumber(opState.activeUntil or 0) or 0) > tnow then
+    TriggerClientEvent('gs-chopshop:client:notify', src, 'An operation is already active.', 'error')
+    return
+  end
+
+  local minLevel = tonumber(d.cost and d.cost.minLevel or d.cost and d.cost.level or 0) or 0
+  if (tonumber(s.level or 0) or 0) < minLevel then
+    TriggerClientEvent('gs-chopshop:client:notify', src, ('Requires Syndicate Level %d.'):format(minLevel), 'error')
+    return
+  end
+
+  local fundsCost = math.floor(tonumber(d.cost and d.cost.funds or 0) or 0)
+  local infCost = math.floor(tonumber(d.cost and d.cost.influence or 0) or 0)
+  local vault = (DB and DB.GetVault) and DB.GetVault(s.id) or 0
+  if vault < fundsCost then
+    TriggerClientEvent('gs-chopshop:client:notify', src, ('Syndicate funds too low. Need $%d.'):format(fundsCost), 'error')
+    return
+  end
+  if (tonumber(s.influence or 0) or 0) < infCost then
+    TriggerClientEvent('gs-chopshop:client:notify', src, ('Not enough influence. Need %d.'):format(infCost), 'error')
+    return
+  end
+
+  if fundsCost > 0 and DB and DB.WithdrawFromVault then
+    local ok = DB.WithdrawFromVault(s.id, cid, fundsCost)
+    if not ok then
+      TriggerClientEvent('gs-chopshop:client:notify', src, 'Funds spend failed.', 'error')
+      return
+    end
+    if DB.AddVaultTx then
+      DB.AddVaultTx(s.id, cid, fundsCost, 'op', ('OP:%s'):format(opId), {})
+    end
+  end
+  if infCost > 0 and DB and DB.SetSyndicateStats then
+    DB.SetSyndicateStats(s.id, s.level or 0, (tonumber(s.influence or 0) or 0) - infCost)
+  end
+
+  local dur = math.floor((tonumber(d.durationMinutes or 0) or 0) * 60)
+  local cd  = math.floor((tonumber(d.cooldownMinutes or 0) or 0) * 60)
+  local cdMult = buffs.opCooldownMult or 1.0
+  local activeUntil = tnow + math.max(60, dur)
+  local cooldownUntil = activeUntil + math.floor(cd * cdMult)
+
+  if DB and DB.SetSyndicateOp then
+    DB.SetSyndicateOp(s.id, tostring(opId), activeUntil, cooldownUntil, {})
+  end
+
+  TriggerClientEvent('gs-chopshop:client:notify', src, 'Operation started.', 'success')
+  local members = (DB and DB.GetSyndicateMembers) and DB.GetSyndicateMembers(s.id) or {}
+  for i=1, #(members or {}) do
+    local ms = getSourceByCid(members[i].citizenid)
+    if ms then TriggerClientEvent('gs-chopshop:client:forceRefresh', ms) end
+  end
+end)
+
+end)
+
+
+-- Co-op system removed. Use Syndicates.
 
 RegisterNetEvent('gs-chopshop:server:cancelContract', function()
   local src = source
@@ -1034,6 +1877,7 @@ RegisterNetEvent('gs-chopshop:server:cancelContract', function()
   TriggerClientEvent('gs-chopshop:client:contractCanceled', src)
   pushData(src)
 end)
+
 
 RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, plate)
   local src = source
@@ -1054,12 +1898,15 @@ RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, pl
 
   c.netId = tonumber(netId)
 
+  -- PD alert on start (now that the vehicle exists)
   if Config.PDAlert and Config.PDAlert.enabled and Config.PDAlert.onStart then
     local veh = NetworkGetEntityFromNetworkId(c.netId)
     if veh and veh ~= 0 and DoesEntityExist(veh) then
       local player = FW.GetPlayer(src)
       local dbid = resolveDbId(src, player)
-      local uinfo = dbid and getUpgradeInfo(dbid) or nil
+      local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
       local mult = (uinfo and uinfo.mult and uinfo.mult.alert) or 1.0
       if c and c.modMult and c.modMult.alert then
         mult = mult * (tonumber(c.modMult.alert) or 1.0)
@@ -1070,6 +1917,7 @@ RegisterNetEvent('gs-chopshop:server:registerSpawnedVehicle', function(netId, pl
   end
 end)
 
+
 RegisterNetEvent('gs-chopshop:server:markFound', function(netId, plate)
   local src = source
   local c = getContract(src)
@@ -1078,11 +1926,13 @@ RegisterNetEvent('gs-chopshop:server:markFound', function(netId, plate)
 
   if trimPlate(plate) ~= trimPlate(c.plate) then return end
 
+  -- accept and store whatever netId the player found
   c.netId = tonumber(netId) or c.netId
   c.found = true
 
   TriggerClientEvent('gs-chopshop:client:foundAck', src)
 end)
+
 
 RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requiredList)
   local src = source
@@ -1153,7 +2003,9 @@ RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requi
   if Config.PDAlert and Config.PDAlert.enabled and Config.PDAlert.onArrival then
     local player = FW.GetPlayer(src)
     local dbid = resolveDbId(src, player)
-    local uinfo = dbid and getUpgradeInfo(dbid) or nil
+    local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
     local mult = (uinfo and uinfo.mult and uinfo.mult.alert) or 1.0
     if c and c.modMult and c.modMult.alert then
       mult = mult * (tonumber(c.modMult.alert) or 1.0)
@@ -1164,6 +2016,7 @@ RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requi
 
   local requiredSet, requiredList = computeRequiredStepsFromClient(requiredList)
 
+  -- Apply forced steps from smarter-contract modifiers
   if c and c.forcedSteps and type(c.forcedSteps) == 'table' then
     for sk, _ in pairs(c.forcedSteps) do
       sk = tostring(sk)
@@ -1178,13 +2031,16 @@ RegisterNetEvent('gs-chopshop:server:beginChop', function(netId, bayIndex, requi
     end
   end
 
+  -- Sort requiredList by configured workflow order
   table.sort(requiredList, function(a, b)
     return (STEP_INDEX[a] or 9999) < (STEP_INDEX[b] or 9999)
   end)
 
   local player = FW.GetPlayer(src)
   local dbid = resolveDbId(src, player)
-  local uinfo = dbid and getUpgradeInfo(dbid) or nil
+  local syndCtx = getSyndicateContextByCid(dbid)
+  local syndBuff = syndCtx and computeSyndicateBuffs(syndCtx) or { upgradePriceMult = 1.0 }
+  local uinfo = dbid and getUpgradeInfo(dbid, { priceMult = syndBuff.upgradePriceMult }) or nil
   local mults = (uinfo and uinfo.mult) or {}
 
 ActiveSessions[src] = {
@@ -1206,13 +2062,15 @@ TriggerClientEvent('gs-chopshop:client:chopSessionStarted', src, {
   netId = netId,
   bayIndex = bayIndex,
   done = {},
-
+  -- IMPORTANT: client/NUI expects an ordered array called requiredList.
   requiredList = requiredList,
   timeMult = mults.time or 1.0,
   finalMult = mults.final or 1.0,
 })
 end)
 
+
+-- Client can report a failed skill check for bonus objectives
 RegisterNetEvent("gs-chopshop:server:noteSkillFail", function()
   local src = source
   local sess = ActiveSessions[src]
@@ -1221,6 +2079,7 @@ RegisterNetEvent("gs-chopshop:server:noteSkillFail", function()
   end
   applyBonusSignal(src, "skillfail", "Skill check failed")
 end)
+
 
 RegisterNetEvent('gs-chopshop:server:completeStep', function(stepKey)
   local src = source
@@ -1248,14 +2107,17 @@ if stepKey ~= 'final' then
   end
 end
 
+  -- Optional strict ordering (prevents skipping to later workflow stages)
   if stepKey ~= 'final' and Config.V3 and Config.V3.enforceStepOrder then
     for _, s in ipairs(Config.AdvancedSteps or {}) do
       local k = tostring(s.key or '')
       if k == '' or k == 'final' then goto continue_order end
       if not stepEnabledServer(k) then goto continue_order end
 
+      -- Stop once we reached the requested step
       if k == stepKey then break end
 
+      -- Only enforce required steps for this vehicle
       if sess.required and sess.required[k] and not sess.done[k] then
         TriggerClientEvent('gs-chopshop:client:notify', src, 'Finish earlier steps first.', 'error')
         return
@@ -1310,6 +2172,7 @@ end
   if stepKey == 'final' then
     local cash = giveFinalRewards(src, c)
 
+    -- Reputation perk payout bonus
     local repNow = 0
     local dbidForRep = resolveDbId(src, player)
     if DB and DB.GetRep and dbidForRep then repNow = DB.GetRep(dbidForRep) end
@@ -1318,11 +2181,12 @@ end
       local repExtra = math.floor(cash * math.max(0.0, repMult - 1.0))
       if repExtra > 0 then
         local p = FW.GetPlayer(src)
-        if p then FW.AddMoney(p, "cash", repExtra) end
+        if p then payCashWithRouting(src, p, repExtra, getSyndicateContextByCid(resolveDbId(src, p)), "REP_BONUS") end
         cash = cash + repExtra
       end
     end
 
+    -- Bonus objective evaluation (money + reputation)
     local bonusAchieved, bonusMult, bonusRep = false, 1.0, 0
     if c and c.bonusObjective and c.bonusObjective.id then
       local bo = c.bonusObjective
@@ -1346,7 +2210,7 @@ end
         local extra = math.floor(cash * math.max(0.0, (bonusMult - 1.0)))
         if extra > 0 then
           local p = FW.GetPlayer(src)
-          if p then FW.AddMoney(p, "cash", extra) end
+          if p then payCashWithRouting(src, p, extra, getSyndicateContextByCid(resolveDbId(src, p)), "BONUS_OBJ") end
           cash = cash + extra
         end
       end
@@ -1362,6 +2226,7 @@ end
       end
     end
 
+
     local dbid = resolveDbId(src, player)
     local name = FW.GetName(player)
 
@@ -1372,26 +2237,60 @@ end
         if bonusAchieved and bonusRep and bonusRep > 0 then repGain = repGain + bonusRep end
         DB.AddResult(dbid, name, c.tier, c.model, cash, true, repGain)
 
-        local partner = Coop.leaderToPartner[src]
-        if partner and GetPlayerPing(partner) > 0 then
-          local share = (Config.Coop and tonumber(Config.Coop.partnerShare or 0.35)) or 0.35
-          share = math.max(0.05, math.min(0.75, share))
-          local cut = math.floor(cash * share)
-          local repCut = math.max(0, math.floor(repGain * ((Config.Coop and tonumber(Config.Coop.partnerRepShare or 1.0)) or 1.0)))
-          local pp = FW.GetPlayer(partner)
-          if pp and cut > 0 then
-            FW.AddMoney(pp, 'cash', cut)
-          end
-          if pp and DB and DB.AddResult then
-            local pcid = FW.GetCid(pp)
-            local pname = FW.GetName(pp)
-            DB.AddResult(pcid, pname, c.tier, c.model, cut, true, repCut)
-          end
-        end
+        -- Co-op removed: Syndicate members coordinate externally.
       end
       if DB and DB.AddTierProgress then
         DB.AddTierProgress(dbid, c.tier)
       end
+
+      -- Syndicate progression: earn influence, auto-level based on total influence.
+      if Config.Syndicate and Config.Syndicate.enabled and DB and DB.GetPlayerSyndicate and DB.AddSyndicateInfluence and DB.SetSyndicateStats then
+        local baseInf = tonumber(Config.Syndicate.influenceBase or 0) or 0
+        local byTier = Config.Syndicate.influenceByTier or {}
+        local tierKey = tostring(c.tier)
+        local gain = math.floor(baseInf + (tonumber(byTier[tierKey] or byTier[c.tier] or 0) or 0))
+
+        if gain > 0 then
+          local s = DB.GetPlayerSyndicate(dbid)
+          if s and s.id and s.id > 0 then
+            DB.AddSyndicateInfluence(s.id, gain)
+
+            -- Syndicate aggregate stats
+            if DB and DB.AddSyndicateStatsAgg then
+              DB.AddSyndicateStatsAgg(s.id, { contractsCompleted = 1, earningsTotal = cash, influenceTotal = gain, bestPayout = cash })
+            end
+
+            -- Black Market War scoring (group competitive ladder)
+            if c and c.bm and War and War.AwardOnCompletion then
+              local perfect = (not (sess.alertTriggered or false)) and (not (sess.failedSkill or false))
+              War.AwardOnCompletion(s.id, c, { perfect = perfect, bonusAchieved = bonusAchieved })
+            end
+
+
+            -- Auto-level based on influence
+            local per = tonumber(Config.Syndicate.influencePerLevel or 100) or 100
+            local updated = DB.GetPlayerSyndicate(dbid)
+            local inf = tonumber(updated and updated.influence or 0) or 0
+            local newLvl = math.floor(inf / math.max(1, per))
+            if newLvl ~= (tonumber(updated and updated.level or 0) or 0) then
+              DB.SetSyndicateStats(s.id, newLvl, inf)
+            end
+          else
+            -- Fallback to old per-player influence if not in a syndicate
+            if DB.AddInfluence and DB.GetSyndicate and DB.SetSyndicate then
+              DB.AddInfluence(dbid, gain)
+              local s2 = DB.GetSyndicate(dbid)
+              local per = tonumber(Config.Syndicate.influencePerLevel or 100) or 100
+              local inf2 = tonumber(s2 and s2.influence or 0) or 0
+              local lvl2 = math.floor(inf2 / math.max(1, per))
+              if lvl2 ~= (tonumber(s2 and s2.level or 0) or 0) then
+                DB.SetSyndicate(dbid, lvl2, inf2)
+              end
+            end
+          end
+        end
+      end
+
     end)
 
     if not ok then
@@ -1441,4 +2340,50 @@ CreateThread(function()
     TriggerClientEvent('gs-chopshop:client:armOpen', src)
     TriggerClientEvent('gs-chopshop:client:openTablet', src)
   end)
+end)
+
+
+exports('GrantUpgradeLevels', function(src, upgradeId, levels)
+  local player = FW.GetPlayer(src)
+  if not player then return false end
+  upgradeId = tostring(upgradeId or '')
+  levels = math.floor(tonumber(levels or 0) or 0)
+  if levels <= 0 then return false end
+  local dbid = resolveDbId(src, player)
+  local u = DB.GetUpgrades(dbid)
+  local cur = tonumber(u[upgradeId] or 0) or 0
+  DB.SetUpgrade(dbid, upgradeId, cur + levels)
+  pushData(src)
+  return true
+end)
+
+exports('GrantSyndicateInfluence', function(src, amount)
+  local player = FW.GetPlayer(src)
+  if not player then return false end
+  local cid = FW.GetCid(player)
+  if not (Config.Syndicate and Config.Syndicate.enabled) then return false end
+  amount = math.floor(tonumber(amount or 0) or 0)
+  if amount == 0 then return false end
+
+  if DB and DB.GetPlayerSyndicate and DB.AddSyndicateInfluence and DB.SetSyndicateStats then
+    local s = DB.GetPlayerSyndicate(cid)
+    if s and s.id and s.id > 0 then
+      DB.AddSyndicateInfluence(s.id, amount)
+      local per = tonumber(Config.Syndicate.influencePerLevel or 100) or 100
+      local updated = DB.GetPlayerSyndicate(cid)
+      local inf = tonumber(updated and updated.influence or 0) or 0
+      local newLvl = math.floor(inf / math.max(1, per))
+      if newLvl ~= (tonumber(updated and updated.level or 0) or 0) then
+        DB.SetSyndicateStats(s.id, newLvl, inf)
+      end
+      return true
+    end
+  end
+
+  -- fallback legacy
+  if DB and DB.AddInfluence then
+    DB.AddInfluence(cid, amount)
+    return true
+  end
+  return false
 end)

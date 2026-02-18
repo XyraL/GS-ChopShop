@@ -211,21 +211,6 @@ section.view[data-view="ops"] #upgList{
   padding:0 18px 18px 18px;
 }
 
-/* vNext Upgrades layout uses category panels (Personal / Shop / Network)
-   so we scroll the active .upgList inside .upgPanels instead of #upgList */
-section.view[data-view="ops"] .upgPanels{
-  flex:1;
-  min-height:0;            /* critical so overflow children can scroll */
-  overflow:hidden;
-  padding:0 18px 18px 18px;
-}
-section.view[data-view="ops"] .upgList{
-  height:100%;
-  overflow:auto;
-  padding-right:8px;       /* room for scrollbar so cards don’t clip */
-  scrollbar-gutter: stable both-edges;
-}
-
 /* History / leaderboard lists should scroll and never clip the last row */
 section.view[data-view="history"] .list,
 section.view[data-view="leaderboard"] .list{
@@ -246,7 +231,6 @@ section.view[data-view="leaderboard"] .list{
 
 /* Scrollbar styling (FiveM NUI uses Chromium) */
 section.view[data-view="ops"] #upgList::-webkit-scrollbar,
-section.view[data-view="ops"] .upgList::-webkit-scrollbar,
 section.view[data-view="history"] .list::-webkit-scrollbar,
 section.view[data-view="leaderboard"] .list::-webkit-scrollbar{
   width:10px;
@@ -257,13 +241,11 @@ section.view[data-view="leaderboard"] .list::-webkit-scrollbar{
 #histList::-webkit-scrollbar-thumb{background:linear-gradient(180deg, rgba(214,175,55,.26), rgba(214,175,55,.12)); border-radius:999px; border:1px solid rgba(214,175,55,.22)}
 #histList::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg, rgba(214,175,55,.34), rgba(214,175,55,.16))}
 section.view[data-view="ops"] #upgList::-webkit-scrollbar-track,
-section.view[data-view="ops"] .upgList::-webkit-scrollbar-track,
 section.view[data-view="history"] .list::-webkit-scrollbar-track,
 section.view[data-view="leaderboard"] .list::-webkit-scrollbar-track{
   background:transparent;
 }
 section.view[data-view="ops"] #upgList::-webkit-scrollbar-thumb,
-section.view[data-view="ops"] .upgList::-webkit-scrollbar-thumb,
 section.view[data-view="history"] .list::-webkit-scrollbar-thumb,
 section.view[data-view="leaderboard"] .list::-webkit-scrollbar-thumb{
   background:linear-gradient(180deg, rgba(214,175,55,.26), rgba(214,175,55,.12));
@@ -271,7 +253,6 @@ section.view[data-view="leaderboard"] .list::-webkit-scrollbar-thumb{
   border-radius:999px;
 }
 section.view[data-view="ops"] #upgList::-webkit-scrollbar-thumb:hover,
-section.view[data-view="ops"] .upgList::-webkit-scrollbar-thumb:hover,
 section.view[data-view="history"] .list::-webkit-scrollbar-thumb:hover,
 section.view[data-view="leaderboard"] .list::-webkit-scrollbar-thumb:hover{
   background:linear-gradient(180deg, rgba(242,223,155,.28), rgba(214,175,55,.16));
@@ -552,6 +533,9 @@ section.view[data-view="leaderboard"] .list::-webkit-scrollbar-thumb:hover{
 }
 
 .grid{display:grid; grid-template-columns: 1.15fr .85fr; gap:14px; height:100%}
+
+/* Give Upgrades (tree) more breathing room */
+.view[data-view="ops"] .grid{grid-template-columns: 1.35fr .65fr}
 
 .card{
   height:100%;
@@ -924,6 +908,9 @@ input[type="range"]::-moz-range-thumb{
 .bonusWarn{margin-top:10px;padding:10px 12px;border-radius:12px;border:1px solid rgba(212,175,55,.35);background:linear-gradient(90deg, rgba(212,175,55,.12), rgba(0,0,0,.25));opacity:0;transform:translateY(-6px);pointer-events:none}
 .bonusWarn.show{animation: bonusWarnPop 2.2s ease forwards}
 .bonusWarn.hidden{display:none}
+
+/* Generic visibility helper (used across NUI panels) */
+.hidden{display:none !important}
 @keyframes bonusWarnPop{
   0%{opacity:0;transform:translateY(-6px)}
   15%{opacity:1;transform:translateY(0)}
@@ -947,210 +934,146 @@ input[type="range"]::-moz-range-thumb{
   --gold: #f2d37a;
 }
 
-/* Upgrade sub-tabs */
-.subTabs{display:flex;gap:10px;margin-top:12px;margin-bottom:12px}
-.subTab{flex:1;padding:10px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.25);color:rgba(255,255,255,.86);cursor:pointer;font-weight:700;letter-spacing:.06em;text-transform:uppercase}
-.subTab:hover{border-color:rgba(212,175,55,.35)}
-.subTab.active{background:linear-gradient(135deg, rgba(212,175,55,.25), rgba(0,0,0,.25));border-color:rgba(212,175,55,.55);box-shadow:0 10px 30px rgba(0,0,0,.25)}
 
-.upgPanels{position:relative}
-.upgPanel{display:none}
-.upgPanel.active{display:block}
+/* vNext: upgrade console */
+.totalsBar{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:10px 0 12px}
+.tStat{padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}
+.tK{font-size:11px;letter-spacing:.18em;text-transform:uppercase;opacity:.7}
+.tV{font-size:15px;margin-top:2px}
+.upgTopRow{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:8px 0 12px}
+.upgTabs{display:flex;gap:8px;flex-wrap:wrap}
+.upgTree{margin-top:10px}
+.treeHint{font-size:12px;opacity:.7;margin:2px 0 10px}
+.treeCanvas{position:relative;height:clamp(560px, 68vh, 820px);border-radius:18px;background:radial-gradient(1200px 520px at 30% 20%, rgba(255,255,255,.06), rgba(0,0,0,.0)), rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.10);overflow:hidden;cursor:grab}
+.treeCanvas:active{cursor:grabbing}
+.treeLayer{position:absolute;left:0;top:0;width:1400px;height:1400px;}
+.node{position:absolute;min-width:220px;max-width:260px;padding:12px 12px 10px;border-radius:16px;background:rgba(10,10,12,.78);border:1px solid rgba(255,255,255,.10);box-shadow:0 10px 30px rgba(0,0,0,.35);transition:transform .12s ease,border-color .12s ease}
+.node:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.18)}
+.node .nTop{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.node .nName{font-weight:700}
+.node .nTag{font-size:11px;opacity:.75}
+.node .nDesc{font-size:12px;opacity:.78;margin:6px 0 8px;line-height:1.25}
+.node .nBar{height:8px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden}
+.node .nFill{height:100%;width:0%;background:rgba(255,255,255,.30);transition:width .35s ease}
+.node .nBtn{margin-top:10px;width:100%}
+.btn.gold.maxed{background:linear-gradient(90deg, rgba(255,215,100,.95), rgba(255,255,255,.35));color:#151515;box-shadow:0 0 0 1px rgba(255,215,100,.55), 0 0 26px rgba(255,215,100,.22)}
+.btn.gold.maxed[disabled]{opacity:.9;filter:saturate(1.1)}
+.rolePanel,.syndPanel{margin-top:10px}
+.perksPanel{padding:4px 0}
+.perkRow{display:flex;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);margin-bottom:10px}
+.perkRow .pK{font-size:12px;opacity:.78}
+.perkRow .pV{font-weight:700}
+.toast{position:fixed;right:18px;bottom:18px;z-index:50;max-width:320px;padding:12px 14px;border-radius:16px;background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(10px);box-shadow:0 18px 50px rgba(0,0,0,.45);font-size:13px}
+.toast.show{animation:toastIn .22s ease}
+@keyframes toastIn{from{transform:translateY(10px);opacity:0}to{transform:translateY(0);opacity:1}}
+.checkMiniHead{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.miniK{font-size:11px;letter-spacing:.18em;text-transform:uppercase;opacity:.7}
+.miniV{font-size:11px;padding:4px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.10)}
+.checklistRight{max-height:520px;overflow:auto;padding-right:6px}
+.checklistRight .cItem{padding:10px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);margin-bottom:10px}
+.checklistRight .cItem.done{opacity:.6}
+.checklistRight .cLabel{font-weight:700}
+.checklistRight .cSub{font-size:12px;opacity:.76;margin-top:2px}
+
+/* === Contract left card additions === */
+.headBtns{display:flex; gap:10px; align-items:center}
+.liveTop{display:flex; align-items:center; justify-content:space-between; margin-top:6px}
+.statusPill{display:flex; gap:8px; align-items:center; padding:8px 10px; border:1px solid var(--stroke); border-radius:999px; background:rgba(0,0,0,.18)}
+.statusPill .dot{width:8px; height:8px; border-radius:50%; background:var(--ok); box-shadow:0 0 14px rgba(61,255,181,.35)}
+.clock{font-variant-numeric:tabular-nums; color:var(--muted); font-size:13px}
+.liveTimer{margin-top:10px; padding:12px; border:1px solid var(--stroke); border-radius:14px; background:rgba(0,0,0,.16)}
+.liveTimer .time{font-size:28px; font-weight:700; letter-spacing:.5px}
+.pills{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
+.pill{padding:8px 10px; border-radius:999px; border:1px solid var(--stroke); background:rgba(0,0,0,.12); color:var(--txt); font-size:12px}
+.activeGrid{display:grid; grid-template-columns: 120px 1fr; gap:8px 12px; margin-top:12px; padding:12px; border:1px solid var(--stroke); border-radius:14px; background:rgba(0,0,0,.12)}
+.activeGrid .aK{color:var(--muted2); font-size:12px}
+.activeGrid .aV{color:var(--txt); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.mods{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
+.modChip{display:flex; gap:8px; align-items:center; padding:8px 10px; border-radius:999px; border:1px solid var(--stroke); background:rgba(0,0,0,.12); font-size:12px}
+.modDot{width:8px; height:8px; border-radius:50%; background:var(--warn); box-shadow:0 0 12px rgba(255,204,51,.25)}
+.nextBox{margin-top:12px; padding:12px; border:1px solid var(--stroke); border-radius:14px; background:rgba(0,0,0,.12)}
+.nextTitle{color:var(--muted2); font-size:12px; letter-spacing:.12em; text-transform:uppercase}
+.nextLabel{margin-top:6px; font-weight:700}
+.nextTip{margin-top:6px; color:var(--muted); font-size:12px}
+.progressHead{display:flex; align-items:center; justify-content:space-between; margin-top:14px}
+.progressHead .pK{color:var(--muted)}
+.progressHead .pV{color:var(--gold)}
+.progressBar{height:10px; border-radius:999px; border:1px solid var(--stroke); background:rgba(0,0,0,.18); overflow:hidden; margin-top:8px}
+.progressFill{height:100%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border-radius:999px}
+.timeline{margin-top:12px}
+
+/* Inputs used in syndicate creation */
+.input{background:rgba(0,0,0,.18); border:1px solid var(--stroke); border-radius:12px; padding:10px 12px; color:var(--txt); outline:none}
+.input:focus{border-color:rgba(37,214,255,.45); box-shadow:0 0 0 3px rgba(37,214,255,.08)}
+
+/* Role + syndicate panels scroll */
+.rolePanel, .syndPanel{max-height:520px; overflow:auto; padding-right:6px}
+.rolePanel::-webkit-scrollbar, .syndPanel::-webkit-scrollbar{width:8px}
+.rolePanel::-webkit-scrollbar-thumb, .syndPanel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.10); border-radius:999px}
+
+/* Make the upgrade tree feel like the main stage */
+.upgTree{min-height:600px}
+.treeCanvas{min-height:560px}
 
 
-/* --- Upgrades vNext: unified list + tabs --- */
-.upgSearch{ margin: 10px 0 12px; }
-.upgSearch input{
-  width: 100%;
-  height: 38px;
-  border-radius: 14px;
-  padding: 0 14px;
-  outline: none;
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(10,12,18,.35);
-  color: rgba(255,255,255,.92);
+/* Syndicate member management */
+.memberList { max-height: 520px; overflow: auto; padding-right: 6px; }
+.memberList .row { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:10px 10px; border-radius:12px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); }
+.memberList .row + .row { margin-top:10px; }
+.memberList .rowLeft { min-width: 0; }
+.memberList .rowRight { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+.mActions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.miniBtn { padding:6px 10px; border-radius:10px; border:1px solid rgba(255,255,255,0.10); background:rgba(255,255,255,0.04); color:var(--text); font-weight:700; font-size:12px; cursor:pointer; }
+.miniBtn:hover { background:rgba(255,255,255,0.07); }
+.miniBtn.danger { border-color: rgba(255, 88, 88, 0.35); background: rgba(255, 88, 88, 0.08); }
+.miniBtn.danger:hover { background: rgba(255, 88, 88, 0.12); }
+
+/* Syndicate vault + perk shop */
+.syndVaultBox, .syndPerkBox {
+  margin-top: 10px;
 }
-.upgSearch input::placeholder{ color: rgba(255,255,255,.45); }
-
-.upgPanels{ display:flex; flex-direction:column; flex:1; min-height:0; }
-.upgList{ overflow:auto; padding-right: 10px; padding-bottom: 12px; }
-.upgPanel{ display:none; }
-.upgPanel.active{ display:block; }
-
-.upgItem{
-  width:100%;
-  box-sizing:border-box;
-  display:grid;
-  grid-template-columns: minmax(0, 1fr) 220px;
-  gap: 10px;
+.syndVaultHead {
+  display:flex;
   align-items:center;
+  justify-content:space-between;
 }
-.upgItem *{ min-width:0; }
-.upgLeft{ display:flex; flex-direction:column; gap: 6px; }
-.upgTitle{ font-weight: 800; letter-spacing: .2px; }
-.upgDesc{ font-size: 12px; color: rgba(255,255,255,.62); line-height: 1.25; min-height: 16px; }
-.upgTags{ display:flex; gap: 6px; flex-wrap:wrap; min-height: 16px; }
-.upgTag{ font-size: 11px; padding: 4px 10px; border-radius: 999px; background: rgba(0,0,0,.25); border: 1px solid rgba(255,255,255,.10); color: rgba(255,255,255,.78); }
+.miniK { font-size:11px; letter-spacing:1.4px; opacity:.75; }
+.miniV { font-size:18px; font-weight:700; }
+.syndVaultRow { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.vaultTx { margin-top:10px; display:flex; flex-direction:column; gap:8px; max-height:170px; overflow:auto; padding-right:6px; }
+.txRow { display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:14px; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); }
+.txLeft { display:flex; align-items:center; gap:8px; }
+.txRight { font-weight:700; }
+.perkShop { display:grid; grid-template-columns: 1fr; gap:10px; margin-top:10px; max-height:360px; overflow:auto; padding-right:6px; }
+.perkCard { padding:12px 14px; border-radius:16px; background: rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); }
+.perkTop { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.perkName { font-weight:700; }
+.perkLv { font-size:12px; opacity:.8; }
+.perkBot { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.perkCost { font-size:12px; opacity:.8; }
 
-.upgRight{ display:flex; flex-direction:column; align-items:flex-end; gap: 8px; }
-.upgMeta{ font-weight: 800; color: rgba(255,235,170,.92); }
-.upgRight .btn{ width: 100%; min-width:0; }
+/* ===== Elite A: Dark Minimal Polish ===== */
+#app[data-theme="obsidian"] .bgGlow{opacity:.18}
+#app[data-theme="obsidian"] .bgGrid{opacity:.18}
 
+/* Tree focus mode: expand canvas, hide perks */
+#app.treeFocus .view[data-view="ops"] .grid{grid-template-columns: 1fr !important;}
+#app.treeFocus #perksPanel{display:none !important;}
+#app.treeFocus .view[data-view="ops"] .card:nth-child(2){display:none !important;}
+#app.treeFocus #upgTree .treeCanvas{height: clamp(680px, 78vh, 940px) !important;}
 
-/* vAll: align with template classnames */
-.upgName{ font-weight: 800; letter-spacing:.2px; }
-.upgPrice{ font-weight: 800; color: rgba(255,235,170,.92); }
+/* Default tree size bump */
+#upgTree .treeCanvas{height: clamp(560px, 68vh, 860px);}
 
+/* Tree nodes: premium micro-interactions */
+.treeCanvas .node{transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;}
+.treeCanvas .node:hover{transform: translateY(-1px);}
+.treeCanvas .node.unlocking{animation: nodeUnlock .55s ease-out 1;}
+@keyframes nodeUnlock{0%{box-shadow:0 0 0 rgba(255,215,128,.0)}50%{box-shadow:0 0 26px rgba(255,215,128,.25)}100%{box-shadow:0 0 0 rgba(255,215,128,.0)}}
 
-/* === Premium Upgrades UI (v16+) === */
-.luxHeader{ position:relative; }
-.luxBadge{ position:relative; overflow:hidden; }
-.luxBadge::after{
-  content:'';
-  position:absolute; inset:-80% -30%;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-  transform: rotate(12deg) translateX(-40%);
-  animation: luxScan 6s linear infinite;
-  pointer-events:none;
-}
-@keyframes luxScan{ 0%{ transform:rotate(12deg) translateX(-60%);} 100%{ transform:rotate(12deg) translateX(60%);} }
+.treeCanvas .node .nBtn{width:100%}
+.treeCanvas .node .nBtn.maxed{filter: drop-shadow(0 0 10px rgba(255,208,120,.35));}
 
-.luxTotals{
-  margin-top:8px;
-  font-size:12px;
-  color: rgba(255,255,255,0.75);
-  letter-spacing: .2px;
-}
-.luxTotals.pulse{
-  animation: totalsPulse .45s ease-out 1;
-}
-@keyframes totalsPulse{
-  0%{ filter:brightness(1); transform:translateY(0); }
-  40%{ filter:brightness(1.4); transform:translateY(-1px); }
-  100%{ filter:brightness(1); transform:translateY(0); }
-}
-
-.upgItem{
-  display:grid !important;
-  grid-template-columns: minmax(0,1fr) 230px;
-  gap:12px;
-  align-items:center;
-  width:100%;
-  box-sizing:border-box;
-  overflow:hidden;
-}
-.upgItem *{ min-width:0; }
-.upgLeft{ min-width:0; }
-.upgRight{
-  display:flex;
-  flex-direction:column;
-  align-items:flex-end;
-  gap:8px;
-}
-.upgMetaRow{
-  display:flex;
-  flex-direction:column;
-  align-items:flex-end;
-  gap:2px;
-  text-align:right;
-}
-.upgPrice{ white-space:normal; overflow-wrap:anywhere; }
-.upgNext{
-  font-size:12px;
-  color: rgba(255,255,255,0.62);
-}
-.upgEffect{
-  font-size:12px;
-  color: rgba(255,255,255,0.72);
-}
-.upgProg{
-  height:6px;
-  width:100%;
-  border-radius:999px;
-  background: rgba(255,255,255,0.06);
-  overflow:hidden;
-}
-.upgProg > span{
-  display:block;
-  height:100%;
-  width:0%;
-  background: rgba(255,215,120,0.65);
-  transition: width .35s ease;
-}
-.upgItem.buying .upgProg > span{
-  animation: upgIndet 1.15s ease-in-out infinite;
-}
-@keyframes upgIndet{
-  0%{ width:10%; transform:translateX(-10%); }
-  50%{ width:55%; transform:translateX(40%); }
-  100%{ width:10%; transform:translateX(110%); }
-}
-
-.btn.maxed{
-  opacity:1 !important;
-  cursor:not-allowed !important;
-  filter: drop-shadow(0 0 10px rgba(255,215,120,0.25));
-  background: rgba(255,215,120,0.16) !important;
-  border-color: rgba(255,215,120,0.35) !important;
-  color: rgba(255,235,190,0.95) !important;
-}
-.btn.maxed::after{
-  content:'';
-  position:absolute; inset:-2px;
-  border-radius:inherit;
-  box-shadow: 0 0 0 1px rgba(255,215,120,0.25), 0 0 18px rgba(255,215,120,0.18);
-  pointer-events:none;
-}
-.btn.gold{ position:relative; }
-
-/* Toast */
-.toastHost{
-  position:fixed;
-  right:18px;
-  bottom:18px;
-  display:flex;
-  flex-direction:column;
-  gap:10px;
-  z-index:9999;
-  pointer-events:none;
-}
-.toast{
-  min-width:260px;
-  max-width:360px;
-  background: rgba(20,22,30,0.88);
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius:14px;
-  padding:12px 12px;
-  box-shadow: 0 18px 40px rgba(0,0,0,0.35);
-  backdrop-filter: blur(12px);
-  transform: translateY(6px);
-  opacity:0;
-  animation: toastIn .18s ease-out forwards;
-}
-@keyframes toastIn{ to{ transform:translateY(0); opacity:1; } }
-.toast .tTitle{ font-weight:700; font-size:13px; color:rgba(255,255,255,0.92); }
-.toast .tBody{ margin-top:2px; font-size:12px; color:rgba(255,255,255,0.7); }
-
-/* Heat ripple */
-.heatRipple{
-  position:fixed;
-  inset:0;
-  pointer-events:none;
-  opacity:0;
-  background: radial-gradient(circle at 70% 35%, rgba(255,90,90,0.16), transparent 45%);
-  z-index:9998;
-}
-.heatRipple.play{
-  animation: heatPulse .55s ease-out 1;
-}
-@keyframes heatPulse{
-  0%{ opacity:0; transform:scale(0.98); }
-  35%{ opacity:1; transform:scale(1); }
-  100%{ opacity:0; transform:scale(1.02); }
-}
-
-/* Right checklist swap */
-.rightChecklistWrap{ margin-top:10px; }
-.checklistRight{ max-height: calc(60vh - 140px); overflow:auto; padding-right:8px; }
-.cardHead.mini{ padding-bottom:10px; }
-.hidden{ display:none !important; }
+/* Step completion pulse */
+.timeline.stepPulse{animation: stepPulse .45s ease-out 1;}
+@keyframes stepPulse{0%{transform:translateY(0)}40%{transform:translateY(-1px)}100%{transform:translateY(0)}}

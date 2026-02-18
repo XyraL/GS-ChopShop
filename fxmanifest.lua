@@ -26,8 +26,9 @@ files {
   'web/index.html',
   'web/style.css',
   'web/app.js',
+  'web/sfx/*.wav',
 }
 
 dependencies {
-  'oxmysql',
+  'oxmysql', -- for script-driven SQL; if you really want no DB, we can add a Config to disable DB and store in memory only
 }

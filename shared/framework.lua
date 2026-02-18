@@ -1,5 +1,5 @@
 FW = {
-  name = nil,
+  name = nil, -- "qbox" | "qbcore"
   core = nil,
 }
 
@@ -22,6 +22,7 @@ function FW.Init()
   Util.Debug("Framework:", FW.name)
 end
 
+-- server-side player getter
 function FW.GetPlayer(src)
   if FW.name == 'qbox' then
     return FW.core:GetPlayer(src)
@@ -51,7 +52,7 @@ end
 function FW.AddMoney(player, account, amount)
   if not player or not amount then return end
   if FW.name == 'qbox' then
-
+    -- qbox exposes similar money add APIs via player.Functions
     player.Functions.AddMoney(account, amount, "chopshop")
   else
     player.Functions.AddMoney(account, amount, "chopshop")
@@ -75,6 +76,7 @@ function FW.GetMoney(player, account)
   return 0
 end
 
+-- inventory wrappers (server)
 local function detectInventory()
   if Config.Inventory ~= "auto" then return Config.Inventory end
   if GetResourceState('ox_inventory') == 'started' then return 'ox' end
@@ -114,15 +116,18 @@ function FW.HasItem(src, name, amount)
   end
 end
 
+-- usable item register (server)
 function FW.RegisterUsableItem(itemName, cb)
   if FW.name == 'qbox' then
-
+    -- qbox_core provides exports to create useable items in different ways depending on version
+    -- safest is qb-core style if qbox is qb-compat
     local ok = pcall(function()
       exports['qbx_core']:CreateUseableItem(itemName, cb)
     end)
     if ok then return end
   end
 
+  -- qb-core fallback
   FW.core.Functions.CreateUseableItem(itemName, cb)
 end
 GS = GS or {}
@@ -132,6 +137,7 @@ local function hasRes(name)
   return GetResourceState(name) == 'started'
 end
 
+-- Qbox player object wrapper
 function GS.Bridge.getPlayer(src)
   if hasRes('qbx_core') and exports.qbx_core and exports.qbx_core.GetPlayer then
     return exports.qbx_core:GetPlayer(src)
@@ -155,6 +161,7 @@ function GS.Bridge.notify(src, msg, nType)
   TriggerClientEvent('ox_lib:notify', src, { title = 'Chop Shop', description = msg, type = nType or 'inform' })
 end
 
+-- Inventory wrappers (default ox_inventory; qb-inventory fallback if present)
 function GS.Bridge.hasItem(src, item, count)
   count = count or 1
   if hasRes('ox_inventory') and exports.ox_inventory then
@@ -162,7 +169,7 @@ function GS.Bridge.hasItem(src, item, count)
     return (c or 0) >= count
   end
   if hasRes('qb-inventory') and exports['qb-inventory'] then
-
+    -- best-effort: Qbox servers often use ox_inventory; qb-inventory support is optional here
     local ply = GS.Bridge.getPlayer(src)
     if not ply then return false end
     local it = ply.Functions and ply.Functions.GetItemByName and ply.Functions.GetItemByName(item)
@@ -195,9 +202,11 @@ function GS.Bridge.removeItem(src, item, count)
   return false
 end
 
+-- PD notify hook (Qbox-friendly; override in config later if you want)
 function GS.Bridge.pdNotify(payload)
   if not Config.PDNotify.Enabled then return end
 
+  -- Default: try qbx_dispatch if present, else broadcast to PD jobs via client event
   if GetResourceState('qbx_dispatch') == 'started' then
     TriggerEvent('qbx_dispatch:server:notify', {
       jobs = Config.PDNotify.Jobs,
@@ -209,6 +218,7 @@ function GS.Bridge.pdNotify(payload)
     return
   end
 
+  -- Fallback: send a simple notify to online PD players
   for _, id in ipairs(GetPlayers()) do
     local job = GS.Bridge.getJob(tonumber(id))
     if job then

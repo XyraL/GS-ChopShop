@@ -4,11 +4,11 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>GS ChopShop</title>
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=17" />
   </head>
   <body>
 
-    <div id="app" class="shell" data-theme="neon">
+    <div id="app" class="shell" data-theme="obsidian">
     <div class="bg">
       <div class="bgGlow a"></div>
       <div class="bgGlow b"></div>
@@ -54,6 +54,7 @@
         <nav class="nav">
           <button class="navBtn active" data-tab="contract" title="Contract"><span class="ic">◆</span><span class="txt">Contract</span></button>
           <button class="navBtn" data-tab="ops" title="Upgrades"><span class="ic">✦</span><span class="txt">Upgrades</span></button>
+          <button class="navBtn" data-tab="syndicate" title="Syndicate"><span class="ic">☗</span><span class="txt">Syndicate</span></button>
           <button class="navBtn" data-tab="leaderboard" title="Leaderboard"><span class="ic">▲</span><span class="txt">Rank</span></button>
           <button class="navBtn" data-tab="history" title="History"><span class="ic">◷</span><span class="txt">History</span></button>
           <button class="navBtn" data-tab="system" title="System"><span class="ic">⚙</span><span class="txt">System</span></button>
@@ -107,172 +108,216 @@
               <div class="cardHead">
                 <div>
                   <div class="cardTitle">Active Contract</div>
-                  <div class="cardSub">Everything you need, nothing you don’t.</div>
+                  <div class="cardSub" id="liveSub">No contract.</div>
                 </div>
                 <div class="headBtns">
-                  <button id="coopBtn" class="btn ghost" disabled>Invite Co-op</button>
-                <button id="cancelBtn" class="btn danger" disabled>Cancel Contract</button>
+                  <button id="cancelBtn" class="btn danger" disabled>Cancel</button>
                 </div>
               </div>
 
-              <div class="kv">
-                <div class="kvRow"><div class="kvK">Tier</div><div class="kvV" id="activeTier">-</div></div>
-                <div class="kvRow"><div class="kvK">Vehicle</div><div class="kvV" id="activeVeh">-</div></div>
-                <div class="kvRow"><div class="kvK">Plate</div><div class="kvV" id="activePlate">-</div></div>
-                <div class="kvRow"><div class="kvK">Expires</div><div class="kvV" id="activeExpires">--:--</div></div>
+              <div class="liveTop">
+                <div class="statusPill"><span class="dot"></span><span id="contractStatus">IDLE</span></div>
+                <div class="clock" id="serverClock">--:--</div>
               </div>
 
-              <div class="divider"></div>
-
-              <div class="next">
-                <div class="nextTop">
-                  <div>
-                    <div class="nextK">NEXT STEP</div>
-                    <div class="nextV" id="nextLabel">—</div>
-                  </div>
-                  <div class="progress">
-                    <div class="progressTop">
-                      <div class="pPct" id="progressPct">0%</div>
-                      <div class="pStep" id="stepCount">Step 0 / 0</div>
-                    </div>
-                    <div class="bar"><div class="fill" id="progressBarFill"></div></div>
-                  </div>
-                </div>
-
-                <div class="tipBox">
-                  <div class="tipPill">TIP</div>
-                  <div class="tipText" id="nextTip">Start a contract to see next steps.</div>
-                </div>
-
-                <div id="modChips" class="modChips" aria-label="Contract modifiers"></div>
-                <div id="bonusBox" class="bonusBox" aria-label="Bonus objective"></div>
-                <div id="bonusStatusRow" class="bonusStatusRow hidden"><span id="bonusStatusPill" class="bonusPill active">ACTIVE</span><div id="bonusStatusText" class="bonusStatusText"></div></div>
-                <div id="bonusWarn" class="bonusWarn hidden">BONUS AT RISK</div>
-
-
-                <div class="checkHead">
-                  <button id="checkToggle" class="btn ghost small">Show checklist</button>
-                </div>
-
-                <div id="checkWrap" class="checkWrap">
-                  <div id="timeline" class="timeline"></div>
-                  <div id="checklist" class="checklist"></div>
-                </div>
+              <div class="liveTimer">
+                <div class="time" id="liveTimer">--:--</div>
+                <div class="muted" id="liveSub">No contract.</div>
               </div>
+
+              <div class="pills">
+                <div class="pill" id="tierPill">TIER: -</div>
+                <div class="pill" id="platePill">PLATE: -</div>
+              </div>
+
+              <div class="activeGrid">
+                <div class="aK">Tier</div><div class="aV" id="activeTier">-</div>
+                <div class="aK">Vehicle</div><div class="aV" id="activeVeh">-</div>
+                <div class="aK">Plate</div><div class="aV" id="activePlate">-</div>
+                <div class="aK">Expires</div><div class="aV" id="activeExpires">--:--</div>
+              </div>
+
+              <div class="mods" id="modChips"></div>
+
+              <div class="nextBox">
+                <div class="nextTitle">Next Required Step</div>
+                <div class="nextLabel" id="nextLabel">—</div>
+                <div class="nextTip" id="nextTip">Start a contract to see next steps.</div>
+              </div>
+
+              <div class="progressHead">
+                <div class="pK" id="stepCount">Step 0 / 0</div>
+                <div class="pV" id="progressPct">0%</div>
+              </div>
+              <div class="progressBar"><div id="progressBarFill" class="progressFill" style="width:0%"></div></div>
+
+              <div id="timeline" class="timeline"></div>
+
             </section>
 
-            <section class="card cardGlow">
+                        <section class="card cardGlow" id="rightContractCard">
               <div class="cardHead">
                 <div>
-                  <div class="cardTitle">Start New Contract</div>
-                  <div class="cardSub">Choose your tier. Higher tiers hit harder.</div>
+                  <div class="cardTitle" id="rightCardTitle">Start New Contract</div>
+                  <div class="cardSub" id="rightCardSub">Choose your tier. Higher tiers hit harder.</div>
                 </div>
               </div>
 
-              <div id="tiersWrap" class="tiers">
-                <div class="tierCard">
-                  <div class="tierTop">
-                    <div class="tierName">Tier 1</div>
-                    <div class="tierTag">Quick flips</div>
+              <div id="startPanel">
+                <div class="tiers">
+                  <div class="tierCard">
+                    <div class="tierTop">
+                      <div class="tierName">Tier 1</div>
+                      <div class="tierTag">Quick flips</div>
+                    </div>
+                    <div class="tierDesc">Street cars, fast dismantle.</div>
+                    <button id="tier1Btn" class="btn primary">Start Tier 1</button>
                   </div>
-                  <div class="tierDesc">Street cars, fast dismantle.</div>
-                  <button id="tier1Btn" class="btn primary">Start Tier 1</button>
+
+                  <div class="tierCard">
+                    <div class="tierTop">
+                      <div class="tierName">Tier 2</div>
+                      <div class="tierTag" id="tier2Lock">Unlocked</div>
+                    </div>
+                    <div class="tierDesc">Sedans and sport, better loot.</div>
+                    <button id="tier2Btn" class="btn primary">Start Tier 2</button>
+                  </div>
+
+                  <div class="tierCard">
+                    <div class="tierTop">
+                      <div class="tierName">Tier 3</div>
+                      <div class="tierTag" id="tier3Lock">Unlocked</div>
+                    </div>
+                    <div class="tierDesc">High value targets, premium payout.</div>
+                    <button id="tier3Btn" class="btn primary">Start Tier 3</button>
+                  </div>
                 </div>
 
-                <div class="tierCard">
-                  <div class="tierTop">
-                    <div class="tierName">Tier 2</div>
-                    <div class="tierTag" id="tier2Lock">Unlocked</div>
-                  </div>
-                  <div class="tierDesc">Sedans and sport, better loot.</div>
-                  <button id="tier2Btn" class="btn primary">Start Tier 2</button>
-                </div>
-
-                <div class="tierCard">
-                  <div class="tierTop">
-                    <div class="tierName">Tier 3</div>
-                    <div class="tierTag" id="tier3Lock">Unlocked</div>
-                  </div>
-                  <div class="tierDesc">High value targets, premium payout.</div>
-                  <button id="tier3Btn" class="btn primary">Start Tier 3</button>
+                <div class="divider"></div>
+                <div class="specialRow">
+                  <button id="specialBtn" class="btn gold">Special Contracts</button>
+                  <div class="specialHint" id="specialHint">Requires REP: --</div>
                 </div>
               </div>
 
-              <div class="divider"></div>
-              <div class="specialRow">
-                <button id="specialBtn" class="btn gold">Special Contracts</button>
-                <div class="specialHint" id="specialHint">Requires REP: --</div>
-              </div>
-            
-              <div id="rightChecklistWrap" class="rightChecklistWrap hidden">
-                <div class="cardHead mini">
-                  <div>
-                    <div class="cardTitle">Checklist</div>
-                    <div class="cardSub">Complete required steps to finish the job.</div>
-                  </div>
+              <div id="rightChecklistPanel" class="hidden">
+                <div class="checkMiniHead">
+                  <div class="miniK">CHECKLIST</div>
+                  <div class="miniV" id="rightChecklistStatus">LIVE</div>
                 </div>
-                <div id="rightChecklist" class="checklist checklistRight"></div>
+                <div id="checklistRight" class="checklistRight"></div>
               </div>
-</section>
+            </section>
           </div>
         </section>
 
-        <!-- UPGRADES VIEW -->
+                <!-- UPGRADES VIEW -->
         <section class="view" data-view="ops">
           <div class="grid">
             <section class="card cardGlow">
               <div class="cardHead">
                 <div>
-                  <div class="cardTitle">Upgrades</div>
-                  <div class="cardSub">Luxury perks for cleaner, faster runs.</div>
+                  <div class="cardTitle">Upgrade Console</div>
+                  <div class="cardSub">Operator, shop, and network layers.</div>
                 </div>
               </div>
+
               <div class="luxHeader">
-                <div class="luxBadge">BLACK MARKET</div>
-                <div class="luxHint" id="upgMsg">Build your operator. Upgrade your shop. Grow your network.</div>
-                <div class="luxTotals" id="upgTotals">Time x1.00 • Payout x1.00 • Alert x1.00 • Radius x1.00 • Final x1.00</div>
+                <div class="luxBadge"><span class="luxPulse"></span> BLACK MARKET</div>
+                <div class="luxHint" id="upgMsg">Hover a perk to preview. Buy to commit.</div>
               </div>
 
-              <div class="subTabs" role="tablist" aria-label="Upgrade categories">
-                <button class="subTab active" data-subtab="all">All</button>
-                <button class="subTab" data-subtab="personal">Personal</button>
-                <button class="subTab" data-subtab="shop">Shop</button>
-                <button class="subTab" data-subtab="network">Network</button></div>
-
-              <div class="upgSearch">
-                <input id="upgSearchInput" type="text" placeholder="Search upgrades..." autocomplete="off" />
+              <div class="totalsBar">
+                <div class="tStat"><div class="tK">Time</div><div class="tV" id="totTime">x1.00</div></div>
+                <div class="tStat"><div class="tK">Payout</div><div class="tV" id="totPayout">x1.00</div></div>
+                <div class="tStat"><div class="tK">Alert</div><div class="tV" id="totAlert">x1.00</div></div>
+                <div class="tStat"><div class="tK">Radius</div><div class="tV" id="totRadius">x1.00</div></div>
+                <div class="tStat"><div class="tK">Final</div><div class="tV" id="totFinal">x1.00</div></div>
               </div>
 
-              <div class="upgPanels">
-                <div id="upgAll" class="upgList upgPanel active" data-panel="all"></div>
-                <div id="upgPersonal" class="upgList upgPanel" data-panel="personal"></div>
-                <div id="upgShop" class="upgList upgPanel" data-panel="shop"></div>
-                <div id="upgNetwork" class="upgList upgPanel" data-panel="network"></div>
+              <div class="upgTopRow">
+                <div class="upgTabs">
+                  <button class="chip active" data-upgview="tree">Tree</button>
+                  <button id="treeFocusBtn" class="chip" type="button">Focus</button>
+                  </div>
+                <input id="upgSearch" class="textInput" type="text" placeholder="Search upgrades..." />
               </div>
+
+              <div id="upgList" class="upgList hidden"></div>
+
+              <div id="upgTree" class="upgTree">
+                <div class="treeHint">Drag to pan. Scroll to zoom. Click node to purchase.</div>
+                <div id="treeCanvas" class="treeCanvas"></div>
+              </div>
+
+              <!-- Co-op roles removed -->
+              
             </section>
+
             <section class="card cardGlow">
               <div class="cardHead">
                 <div>
                   <div class="cardTitle">Perks</div>
-                  <div class="cardSub">What these upgrades are meant to power.</div>
+                  <div class="cardSub" id="perkSub">Hover an upgrade to see the next level.</div>
                 </div>
               </div>
-              <div class="notes" id="upgPerks"></div>
+              <div id="perksPanel" class="perksPanel"></div>
+            </section>
+          </div>
+
+          <div id="toast" class="toast hidden"></div>
+          <audio id="sfxUpg" src="sfx/upgrade.wav" preload="auto"></audio>
+        </section>
+
+
+        <!-- SYNDICATE VIEW -->
+        <section class="view" data-view="syndicate">
+          <div class="grid">
+            <section class="card cardGlow">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Syndicate</div>
+                  <div class="cardSub" id="synSub">Create your crew. Grow your influence.</div>
+                </div>
+              </div>
+              <div id="syndicatePanel" class="syndPanel"></div>
+            </section>
+
+            <section class="card cardGlow">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Members</div>
+                  <div class="cardSub">Invite, manage, and expand.</div>
+                </div>
+              </div>
+              <div id="syndicateMembers" class="list"></div>
             </section>
           </div>
         </section>
 
         <!-- LEADERBOARD VIEW -->
         <section class="view" data-view="leaderboard">
-          <section class="card cardGlow">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Top Operators</div>
-                <div class="cardSub">Most completions (server-wide).</div>
+          <div class="grid">
+            <section class="card cardGlow">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Top Operators</div>
+                  <div class="cardSub">Most completions (server-wide).</div>
+                </div>
               </div>
-            </div>
-            <div id="lbList" class="list"></div>
-          </section>
+              <div id="lbList" class="list"></div>
+            </section>
+
+            <section class="card cardGlow">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Top Groups</div>
+                  <div class="cardSub">Prestige points (server-wide).</div>
+                </div>
+              </div>
+              <div id="lbSyndList" class="list"></div>
+            </section>
+          </div>
         </section>
 
         <!-- HISTORY VIEW -->
@@ -351,8 +396,6 @@
       </main>
     </div>
 
-    <script src="app.js"></script>
-    <div id="toastHost" class="toastHost"></div>
-  <div id="heatRipple" class="heatRipple"></div>
-</body>
+    <script src="app.js?v=17"></script>
+  </body>
 </html>
